@@ -5,6 +5,9 @@
 *.so
 *.dylib
 
+server/server
+agent/agent
+
 # Test binary, built with `go test -c`
 *.test
 
