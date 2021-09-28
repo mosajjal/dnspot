@@ -87,13 +87,6 @@ func Decrypt(key crypto.PrivateKey, data []byte) (decrypted []byte, err error) {
 	buf := bytes.Buffer{}
 	x, y := elliptic.Unmarshal(Algorithm, data[0:65])
 
-	senderPubKey := PublicKey{
-		Algorithm,
-		x,
-		y,
-	}
-	println("sender pub key", senderPubKey.String())
-
 	sym, _ := Algorithm.ScalarMult(x, y, private.D)
 	_, err = buf.Write(sym.Bytes())
 	if err != nil {

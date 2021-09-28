@@ -4,8 +4,9 @@
 *.dll
 *.so
 *.dylib
+*.bin
 
-dnspot
+./dnspot
 
 # Test binary, built with `go test -c`
 *.test
