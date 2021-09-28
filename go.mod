@@ -4,6 +4,7 @@ go 1.17
 
 require (
 	github.com/kpango/glg v1.6.4
+	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/miekg/dns v1.1.43
 	github.com/multiformats/go-multihash v0.0.16
 	github.com/spf13/cobra v1.2.1
