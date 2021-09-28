@@ -5,8 +5,7 @@
 *.so
 *.dylib
 
-server/server
-agent/agent
+dnspot
 
 # Test binary, built with `go test -c`
 *.test
