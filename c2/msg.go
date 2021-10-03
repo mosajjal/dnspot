@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"encoding/base32"
 	"math/rand"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/kpango/glg"
+	log "github.com/kpango/glg"
 	"github.com/lunixbochs/struc"
 	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/cryptography"
@@ -50,10 +51,12 @@ type MessagePacketWithSignature struct {
 	Msg       MessagePacket
 }
 
-func performExternalAQuery(Q string, server string) (*dns.Msg, error) {
+func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 	question := dns.Question{Name: Q, Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	c := new(dns.Client)
+	c.Timeout = 6 * time.Second //todo: make this part of config
 	m1 := new(dns.Msg)
+	m1.SetEdns0(1500, false)
 	m1.Id = dns.Id()
 	m1.RecursionDesired = true
 	m1.Question = make([]dns.Question, 1)
@@ -88,10 +91,11 @@ func split(buf []byte, lim int) [][]byte {
 	return chunks
 }
 
-func SendPartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, serverAddress string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) (*dns.Msg, error) {
+func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, uint16, error) {
 	// TODO: fix duplicate sending
 	var err error
-	var response *dns.Msg = nil
+	var response []string
+	var parentPartID uint16 = 0
 	retryCount := 10
 	lims := split(payload, 60)
 	if len(lims) > 1 {
@@ -99,10 +103,11 @@ func SendPartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string,
 		msg.PartID = 0
 		rand.Seed(time.Now().UnixNano())
 		msg.ParentPartID = uint16(rand.Uint32()) + 1
+		parentPartID = msg.ParentPartID
 	}
 	for i := 0; i < len(lims); i++ {
 		if retryCount == 0 {
-			return response, glg.Error("Failed to send message after 10 attempts")
+			return response, parentPartID, log.Error("Failed to send message after 10 attempts")
 		}
 		if i == len(lims)-1 && len(lims) > 1 {
 			msg.IsLastPart = true
@@ -114,40 +119,47 @@ func SendPartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string,
 		struc.Pack(&buf, &msg)
 		encrypted, err := cryptography.Encrypt(serverPublicKey, privateKey, buf.Bytes())
 		if err != nil {
-			return response, glg.Errorf("Failed to encrypt the payload", err)
+			return response, parentPartID, log.Errorf("Failed to encrypt the payload", err)
 		}
 
 		s := base32.StdEncoding.EncodeToString(encrypted)
 		s = strings.ReplaceAll(s, "=", "")
-		Q := insertNth(s, 63) + dnsSuffix
-		if len(Q) < 255 {
-			response, err = performExternalAQuery(Q, serverAddress)
-			if err != nil {
-				glg.Warnf("Failed to send the payload %s.. retry no %d", err, 10-retryCount)
-				time.Sleep(time.Second * 1)
-				i-- //retry
-				retryCount--
-				// return err
-			} else {
-				msg.PartID++
-			}
-		} else {
-			glg.Errorf("query is too big %d, can't send this...\n", len(Q))
-		}
-
+		response = append(response, insertNth(s, 63)+dnsSuffix)
+		msg.PartID++
 	}
-	return response, err
+
+	return response, parentPartID, err
+}
+
+// returns a list of subdomains from a dns message. if the msg type is answer, only answers are returned, otherwise only questions
+func getSubdomainsFromDnsMessage(m *dns.Msg) []string {
+	var res []string
+	if len(m.Answer) > 0 {
+		// for _, a := range m.Answer {
+		// 	res = append(res, a.String())
+		// }
+		res1, _ := m.Answer[0].(*dns.CNAME)
+		res = append(res, res1.Target)
+	} else {
+		for _, q := range m.Question {
+			res = append(res, q.Name)
+		}
+	}
+	return res
 }
 
 func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.PrivateKey, publickey *cryptography.PublicKey) ([]MessagePacketWithSignature, error) {
 	out := []MessagePacketWithSignature{}
-	for _, q := range m.Question {
-		if strings.HasSuffix(q.Name, suffix) {
+
+	listOfSubdomains := getSubdomainsFromDnsMessage(m)
+
+	for _, sub := range listOfSubdomains {
+		if strings.HasSuffix(sub, suffix) {
 
 			// verify incoming domain
-			requestWithoutSuffix := strings.TrimSuffix(q.Name, suffix)
-			if q.Name == requestWithoutSuffix {
-				return out, glg.Errorf("invalid request")
+			requestWithoutSuffix := strings.TrimSuffix(sub, suffix)
+			if sub == requestWithoutSuffix {
+				return out, log.Errorf("invalid request")
 			}
 			msgRaw := strings.Replace(requestWithoutSuffix, ".", "", -1)
 			if i := len(msgRaw) % 8; i != 0 {
@@ -155,26 +167,46 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			}
 
 			msg, err := base32.StdEncoding.DecodeString(msgRaw)
-			// glg.Infof("%v %d", msg, len(msg)) // todo:remove
 			if err != nil {
-				return out, glg.Errorf("invalid base32 input")
+				return out, log.Errorf("invalid base32 input: %s", msgRaw)
 			}
 			// verify signature
 			decrypted, err := cryptography.Decrypt(privatekey, msg)
 			if err != nil {
-				return out, glg.Errorf("invalid signature")
+				return out, log.Errorf("invalid signature")
 			}
 
 			// todo: verify authenticity with public key(s)
 			o := MessagePacketWithSignature{}
 			o.Signature = cryptography.GetPublicKeyFromMessage(msg)
-			// glg.Infof("%v", decrypted) // todo:remove
 			err = struc.Unpack(bytes.NewBuffer(decrypted), &o.Msg)
 			if err != nil {
-				return out, glg.Errorf("couldn't unpack message")
+				return out, log.Errorf("couldn't unpack message")
 			}
 			out = append(out, o)
 		}
 	}
 	return out, nil
+}
+
+func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacketWithSignature {
+	//sort, uniq and remove duplicates. then check if the message is complete
+
+	//sort
+	sort.Slice(packets, func(i, j int) bool {
+		return packets[i].Msg.PartID < packets[j].Msg.PartID
+	})
+
+	// unique
+	for i := 0; i < len(packets)-1; i++ {
+		if packets[i].Msg.PartID == packets[i+1].Msg.PartID {
+			packets = append(packets[:i], packets[i+1:]...)
+			i--
+		}
+	}
+	// check if the message is complete
+	if len(packets) == int(packets[len(packets)-1].Msg.PartID)+1 {
+		return packets
+	}
+	return nil
 }
