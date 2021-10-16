@@ -166,3 +166,12 @@ func GenerateKey() (*PrivateKey, error) {
 		D: d,
 	}, nil
 }
+
+func GetPublicKeyFromMessage(msg []byte) *PublicKey {
+	x, y := elliptic.Unmarshal(Algorithm, msg[0:65])
+	return &PublicKey{
+		Curve: Algorithm,
+		X:     x,
+		Y:     y,
+	}
+}
