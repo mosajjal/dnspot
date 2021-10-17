@@ -9,9 +9,7 @@ Honeypot framework with DNS C2 backend
 - remote code execution
 
 # TODO
-- Dynamic suffix length
 - [x] action on incoming packets
 - [x] check order of packets received
 - [x] send large packets from server to agent
-
-
+- [ ] Dynamic suffix length
