@@ -8,7 +8,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base32"
 	"errors"
 	"math/big"
 )
@@ -37,7 +36,7 @@ func Encrypt(key crypto.PublicKey, signature crypto.PrivateKey, data []byte) (en
 
 	private := signature.(*PrivateKey)
 	pub := private.GetPublicKey()
-	ephemeral := elliptic.Marshal(pub.Curve, pub.X, pub.Y)
+	ephemeral := elliptic.MarshalCompressed(pub.Curve, pub.X, pub.Y)
 	sym, _ := public.Curve.ScalarMult(public.X, public.Y, private.D)
 	// Create buffer
 	buf := bytes.Buffer{}
@@ -85,7 +84,7 @@ func Decrypt(key crypto.PrivateKey, data []byte) (decrypted []byte, err error) {
 		return
 	}
 	buf := bytes.Buffer{}
-	x, y := elliptic.Unmarshal(Algorithm, data[0:65])
+	x, y := elliptic.UnmarshalCompressed(Algorithm, data[0:33])
 
 	sym, _ := Algorithm.ScalarMult(x, y, private.D)
 	_, err = buf.Write(sym.Bytes())
@@ -96,7 +95,7 @@ func Decrypt(key crypto.PrivateKey, data []byte) (decrypted []byte, err error) {
 	if err != nil {
 		return
 	}
-	_, err = buf.Write(data[0:65])
+	_, err = buf.Write(data[0:33])
 	if err != nil {
 		return
 	}
@@ -111,15 +110,15 @@ func Decrypt(key crypto.PrivateKey, data []byte) (decrypted []byte, err error) {
 	if err != nil {
 		return
 	}
-	decrypted, err = ch.Open(nil, hashed[16:], data[65:], nil)
+	decrypted, err = ch.Open(nil, hashed[16:], data[33:], nil)
 	return
 }
 
 func (key PrivateKey) String() string {
-	return base32.StdEncoding.EncodeToString(key.D)
+	return EncodeBytes(key.D)
 }
 func (key PublicKey) String() string {
-	return base32.StdEncoding.EncodeToString(elliptic.Marshal(key.Curve, key.X, key.Y))
+	return EncodeBytes(elliptic.MarshalCompressed(key.Curve, key.X, key.Y))
 }
 
 func (key PrivateKey) GetPublicKey() PublicKey {
@@ -132,11 +131,12 @@ func (key PrivateKey) GetPublicKey() PublicKey {
 }
 
 func PublicKeyFromString(public string) (*PublicKey, error) {
-	publicKey, err := base32.StdEncoding.DecodeString(public)
-	if err != nil {
-		return nil, err
-	}
-	x, y := elliptic.Unmarshal(Algorithm, publicKey)
+	publicKey := DecodeToBytes(public)
+
+	// if err != nil {
+	// 	return nil, err
+	// }
+	x, y := elliptic.UnmarshalCompressed(Algorithm, publicKey)
 	if x == nil || y == nil {
 		return nil, errors.New("invalid public key")
 	}
@@ -148,10 +148,10 @@ func PublicKeyFromString(public string) (*PublicKey, error) {
 }
 
 func PrivateKeyFromString(private string) (*PrivateKey, error) {
-	d, err := base32.StdEncoding.DecodeString(private)
-	if err != nil {
-		return nil, err
-	}
+	d := DecodeToBytes(private)
+	// if err != nil {
+	// 	return nil, err
+	// }
 	return &PrivateKey{
 		D: d,
 	}, nil
@@ -168,7 +168,7 @@ func GenerateKey() (*PrivateKey, error) {
 }
 
 func GetPublicKeyFromMessage(msg []byte) *PublicKey {
-	x, y := elliptic.Unmarshal(Algorithm, msg[0:65])
+	x, y := elliptic.UnmarshalCompressed(Algorithm, msg[0:33])
 	return &PublicKey{
 		Curve: Algorithm,
 		X:     x,
