@@ -5,10 +5,10 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/kpango/glg"
 	"github.com/mosajjal/dnspot/c2"
 	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
+	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
