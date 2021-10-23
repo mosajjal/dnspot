@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
+	"os"
 	"strings"
 	"time"
 
@@ -372,8 +374,17 @@ func updater() {
 func RunServer(cmd *cobra.Command, args []string) {
 	// set global flag that we're running as server
 	conf.Mode = conf.RunAsServer
-
+	log.SetLevel(log.Level(conf.GlobalServerConfig.LogLevel))
 	log.SetOutput(UiLog)
+
+	if conf.GlobalServerConfig.LogFile != "" {
+		f, err := os.OpenFile(conf.GlobalServerConfig.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+		if err != nil {
+			log.Fatalf("error opening file: %v", err)
+		}
+		mw := io.MultiWriter(os.Stdout, f)
+		log.SetOutput(mw)
+	}
 
 	var err error
 	conf.GlobalServerConfig.ListenAddress, err = cmd.Flags().GetString("listenAddress")

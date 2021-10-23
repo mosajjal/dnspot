@@ -3,6 +3,8 @@ package conf
 import "github.com/mosajjal/dnspot/cryptography"
 
 var GlobalServerConfig struct {
+	LogFile               string
+	LogLevel              uint8
 	PrivateKeyB32         string
 	PrivateKey            *cryptography.PrivateKey
 	ListenAddress         string
@@ -13,6 +15,7 @@ var GlobalServerConfig struct {
 }
 
 var GlobalAgentConfig struct {
+	LogLevel           uint8
 	PrivateKeyB32      string
 	PrivateKey         *cryptography.PrivateKey
 	ServerAddress      string
