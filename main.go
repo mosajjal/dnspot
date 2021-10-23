@@ -41,6 +41,8 @@ func main() {
 		},
 	}
 
+	cmdServer.Flags().StringVarP(&conf.GlobalServerConfig.LogFile, "logFile", "", "", "Log output file. Optional")
+	cmdServer.Flags().Uint8VarP(&conf.GlobalServerConfig.LogLevel, "logLevel", "", 1, "Log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 	cmdServer.Flags().StringVarP(&conf.GlobalServerConfig.PrivateKeyB32, "privateKey", "", "", "Private Key used")
 	cmdServer.MarkFlagRequired("privateKey")
 	cmdServer.Flags().StringVarP(&conf.GlobalServerConfig.ListenAddress, "listenAddress", "", "0.0.0.0:53", "Listen Socket")
@@ -61,6 +63,7 @@ func main() {
 			agent.RunAgent(cmd, args)
 		},
 	}
+	cmdAgent.Flags().Uint8VarP(&conf.GlobalAgentConfig.LogLevel, "loglevel", "", 1, "log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.PrivateKeyB32, "privateKey", "", "", "Private Key used")
 	cmdAgent.MarkFlagRequired("privateKey")
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.ServerPublicKeyB32, "serverPublicKey", "", "", "Server's public Key")

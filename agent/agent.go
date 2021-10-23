@@ -199,6 +199,7 @@ func sendHealthCheck() error {
 }
 
 func RunAgent(cmd *cobra.Command, args []string) error {
+	log.SetLevel(log.Level(conf.GlobalAgentConfig.LogLevel))
 	log.Infof("Starting agent...")
 	// set global flag that we're running as server
 	conf.Mode = conf.RunAsAgent
