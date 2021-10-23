@@ -115,12 +115,12 @@ As mentioned above, `dnspot` is buggy. Polishing the source and framework is the
 
 There's also a plan to implement file transfer both from server to agent and vice-versa. I'm thinking of leveraging a high-ratio compression algorithm to make it different than `cat`'ing a file to the agent. ideas are welcome!
 
-- [] File transfer
-- [] better configuration
-- [] TUI improvements and different command options
-- [] Agent watchdog to reset agent on failure or error rather than crash and die
-- [] DoT and DoH support
-- [] Decouple framework and UI to make it usable outside the project
-- [] Standard API and documentation
-- [] Possible Web UI for server
-- [] Alternative Query and response types (TXT, ANY, etc)
+- [ ] File transfer
+- [ ] better configuration
+- [ ] TUI improvements and different command options
+- [ ] Agent watchdog to reset agent on failure or error rather than crash and die
+- [ ] DoT and DoH support
+- [ ] Decouple framework and UI to make it usable outside the project
+- [ ] Standard API and documentation
+- [ ] Possible Web UI for server
+- [ ] Alternative Query and response types (TXT, ANY, etc)
