@@ -3,10 +3,9 @@ module github.com/mosajjal/dnspot
 go 1.17
 
 require (
-	github.com/kpango/glg v1.6.4
 	github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40
 	github.com/miekg/dns v1.1.43
-	github.com/mum4k/termdash v0.16.0
+	github.com/rivo/tview v0.0.0-20211001102648-5508f4b00266
 	github.com/sirupsen/logrus v1.8.1
 	github.com/spf13/cobra v1.2.1
 )
@@ -14,9 +13,7 @@ require (
 require (
 	github.com/gdamore/encoding v1.0.0 // indirect
 	github.com/gdamore/tcell/v2 v2.4.1-0.20210905002822-f057f0a857a1 // indirect
-	github.com/goccy/go-json v0.7.4 // indirect
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
-	github.com/kpango/fastime v1.0.17 // indirect
 	github.com/lucasb-eyer/go-colorful v1.2.0 // indirect
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/rivo/uniseg v0.2.0 // indirect

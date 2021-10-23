@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/agent"
 	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
@@ -23,8 +24,8 @@ func generateKeys(cmd *cobra.Command, args []string) {
 		panic(err.Error())
 	}
 	pubKey := privateKey.GetPublicKey()
-	fmt.Println("public key:", pubKey.String())
-	fmt.Println("secret key:", privateKey.String())
+	fmt.Println("public  key:", pubKey.String())
+	fmt.Println("private key:", privateKey.String())
 }
 
 func main() {
@@ -67,7 +68,10 @@ func main() {
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.DnsSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
 	cmdAgent.MarkFlagRequired("dnsSuffix")
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.ServerAddress, "serverAddress", "", "", "DNS Server to use. You can specify custom port here. Leave blank to use system's DNS server")
-	cmdAgent.MarkFlagRequired("serverAddress")
+	if conf.GlobalAgentConfig.ServerAddress == "" {
+		systemDNS, _ := dns.ClientConfigFromFile("/etc/resolv.conf")
+		conf.GlobalAgentConfig.ServerAddress = systemDNS.Servers[0] + ":53"
+	}
 
 	// helper function to spit out keys
 	var cmdGenerateKey = &cobra.Command{

