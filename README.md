@@ -1,6 +1,8 @@
 # dnspot
 End-to-end Encrypted DNS Tunneling and C2 framework
 
+![dnspot](static/dnspot-logo.jpeg)
+
 # Motivation
 I was always fascinated by Thinkst's canary technology. Thinkst canaries exclusively use DNS tunneling to act as C2 and push configuration. I wanted to build something similar. In the meantime, I had to do more work on DNS since it's one of my favorites. 
 
