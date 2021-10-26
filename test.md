@@ -1,9 +1,0 @@
-server:
-
-public key: f8hp0btwkduxgpn3q5fkiys9t3grrfscan5cvojzlie3d446ft
-secret key: 1bqx0ny5cv3j3u97qg3q73ivor0quhjboyilbghs29r2x7yj2w
-
-agent1:
-
-public key: nnmxo8snaufg5k8fe2jy7ns6gumtz38iro6vzhxfbpdbokyge3
-secret key: rgexxdm0yjjc54p47owmiqfw141xe59d95s0iuzufb4ytxbep
