@@ -67,8 +67,8 @@ func main() {
 
 	cmdAgent.Flags().DurationVarP(&conf.GlobalAgentConfig.CommandTimeout, "timeout", "", 2*time.Second, "Timeout for DNS requests")
 	cmdAgent.Flags().Uint8VarP(&conf.GlobalAgentConfig.LogLevel, "loglevel", "", 1, "log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
-	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.PrivateKeyB32, "privateKey", "", "", "Private Key used")
-	cmdAgent.MarkFlagRequired("privateKey")
+	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.PrivateKeyB32, "privateKey", "", "", "Private Key used. Generates one on the fly if empty")
+	// cmdAgent.MarkFlagRequired("privateKey")
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.ServerPublicKeyB32, "serverPublicKey", "", "", "Server's public Key")
 	cmdAgent.MarkFlagRequired("serverPublicKey")
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.DnsSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
