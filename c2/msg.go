@@ -102,23 +102,23 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	var response []string
 	var parentPartID uint16 = 0
 	retryCount := 10
-	lims := split(payload, CHUNK_SIZE)
-	if len(lims) > 1 {
+	limbs := split(payload, CHUNK_SIZE)
+	if len(limbs) > 1 {
 		msg.IsLastPart = false
 		msg.PartID = 0
 		rand.Seed(time.Now().UnixNano())
 		msg.ParentPartID = uint16(rand.Uint32()) + 1
 		parentPartID = msg.ParentPartID
 	}
-	for i := 0; i < len(lims); i++ {
+	for i := 0; i < len(limbs); i++ {
 		if retryCount == 0 {
 			return response, parentPartID, errors.New("failed to send message after 10 attempts")
 		}
-		if i == len(lims)-1 && len(lims) > 1 {
+		if i == len(limbs)-1 && len(limbs) > 1 {
 			msg.IsLastPart = true
 		}
 		msg.Payload = [PAYLOAD_SIZE]byte{}
-		copy(msg.Payload[:], lims[i])
+		copy(msg.Payload[:], limbs[i])
 		var buf bytes.Buffer
 		buf.Reset()
 		struc.Pack(&buf, &msg)
@@ -180,7 +180,8 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			// verify signature
 			decrypted, err := cryptography.Decrypt(privatekey, msg)
 			if err != nil {
-				return out, errors.New("invalid signature")
+				//todo: since a lot of these are noise and duplicates, maybe we can skip putting this as error
+				return out, err
 			}
 
 			// todo: verify authenticity with public key(s)
