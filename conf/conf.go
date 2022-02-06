@@ -1,6 +1,10 @@
 package conf
 
-import "github.com/mosajjal/dnspot/cryptography"
+import (
+	"time"
+
+	"github.com/mosajjal/dnspot/cryptography"
+)
 
 var GlobalServerConfig struct {
 	LogFile               string
@@ -15,6 +19,7 @@ var GlobalServerConfig struct {
 }
 
 var GlobalAgentConfig struct {
+	CommandTimeout     time.Duration
 	LogLevel           uint8
 	PrivateKeyB32      string
 	PrivateKey         *cryptography.PrivateKey

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/agent"
@@ -63,6 +64,8 @@ func main() {
 			agent.RunAgent(cmd, args)
 		},
 	}
+
+	cmdAgent.Flags().DurationVarP(&conf.GlobalAgentConfig.CommandTimeout, "timeout", "", 2*time.Second, "Timeout for DNS requests")
 	cmdAgent.Flags().Uint8VarP(&conf.GlobalAgentConfig.LogLevel, "loglevel", "", 1, "log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.PrivateKeyB32, "privateKey", "", "", "Private Key used")
 	cmdAgent.MarkFlagRequired("privateKey")

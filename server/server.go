@@ -301,7 +301,7 @@ func cleanupBuffer(timeout time.Duration) error {
 func parseQuery(m *dns.Msg) error {
 	outs, err := c2.DecryptIncomingPacket(m, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, nil)
 	if err != nil {
-		log.Warnf("Error in Decrypting incoming packet: %v", err)
+		log.Infof("Error in Decrypting incoming packet: %v", err)
 	}
 	for _, o := range outs {
 		switch msgType := o.Msg.MessageType; msgType {
