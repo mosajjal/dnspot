@@ -2,6 +2,7 @@ package c2
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"math/rand"
 	"sort"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/lunixbochs/struc"
 	"github.com/miekg/dns"
+	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
@@ -96,8 +98,27 @@ func split(buf []byte, lim int) [][]byte {
 	return chunks
 }
 
+// Gets a big payload that needs to be sent over the wire, chops it up into smaller limbs and creates a list of messages to be sent. It also sends the parentPartID to make sure the series
+// of messages are not lost
 func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, uint16, error) {
 	// TODO: fix duplicate sending
+
+	// handle compression
+	if len(payload) > conf.CompressionThreshold {
+		var b bytes.Buffer
+		gz, _ := gzip.NewWriterLevel(&b, gzip.BestCompression)
+		if _, err := gz.Write(payload); err != nil {
+			panic(err)
+		}
+		if err := gz.Flush(); err != nil {
+			panic(err)
+		}
+		if err := gz.Close(); err != nil {
+			panic(err)
+		}
+		payload = b.Bytes()
+	}
+
 	var err error
 	var response []string
 	var parentPartID uint16 = 0

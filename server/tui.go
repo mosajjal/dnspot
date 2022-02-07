@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/mosajjal/dnspot/cryptography"
 	"github.com/rivo/tview"
@@ -24,6 +25,21 @@ var UiCmd = tview.NewForm()
 var UiLog = tview.NewTextView()
 
 var UiRoot = tview.NewApplication()
+
+func uiUpdater() {
+	timeticker := time.NewTicker(1 * time.Second)
+	idleAgentRemovalTicker := time.NewTicker(60 * time.Second)
+	// runCmdTicker := time.NewTicker(30 * time.Second)
+	for {
+		select {
+		case <-timeticker.C:
+			UiRoot.Draw()
+
+		case <-idleAgentRemovalTicker.C:
+			RemoveIdleAgents()
+		}
+	}
+}
 
 func RunTui() {
 	UiAgentList.SetTitle("Agents").SetBorder(true)
@@ -53,7 +69,11 @@ func RunTui() {
 		AddItem(UiLog, 0, 1, 1, 1, 0, 100, false).
 		AddItem(UiCmd, 1, 0, 1, 2, 0, 100, true)
 
+	// refresh UI and remove idle nodes as a goroutine
+	go uiUpdater()
+
 	if err := UiRoot.SetRoot(grid, true).SetFocus(grid).EnableMouse(true).Run(); err != nil {
 		panic(err)
 	}
+
 }

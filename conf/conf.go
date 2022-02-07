@@ -6,27 +6,31 @@ import (
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
+const (
+	CompressionThreshold = 1024 * 2 // 2KB
+)
+
 var GlobalServerConfig struct {
-	LogFile               string
-	LogLevel              uint8
-	PrivateKeyB32         string
-	PrivateKey            *cryptography.PrivateKey
-	ListenAddress         string
-	EnforceClientKeys     bool
-	AcceptedClientKeysB32 []string
-	AcceptedClientKeys    *[]cryptography.PublicKey
-	DnsSuffix             string
+	LogFile                  string
+	LogLevel                 uint8
+	PrivateKeyBasexx         string
+	PrivateKey               *cryptography.PrivateKey
+	ListenAddress            string
+	EnforceClientKeys        bool
+	AcceptedClientKeysBasexx []string
+	AcceptedClientKeys       *[]cryptography.PublicKey
+	DnsSuffix                string
 }
 
 var GlobalAgentConfig struct {
-	CommandTimeout     time.Duration
-	LogLevel           uint8
-	PrivateKeyB32      string
-	PrivateKey         *cryptography.PrivateKey
-	ServerAddress      string
-	ServerPublicKeyB32 string
-	ServerPublicKey    *cryptography.PublicKey
-	DnsSuffix          string
+	CommandTimeout        time.Duration
+	LogLevel              uint8
+	PrivateKeyBasexx      string
+	PrivateKey            *cryptography.PrivateKey
+	ServerAddress         string
+	ServerPublicKeyBasexx string
+	ServerPublicKey       *cryptography.PublicKey
+	DnsSuffix             string
 }
 
 type Runmode uint8
