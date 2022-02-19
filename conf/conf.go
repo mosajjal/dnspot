@@ -12,6 +12,7 @@ const (
 
 var GlobalServerConfig struct {
 	LogFile                  string
+	OutFile                  string
 	LogLevel                 uint8
 	PrivateKeyBasexx         string
 	PrivateKey               *cryptography.PrivateKey

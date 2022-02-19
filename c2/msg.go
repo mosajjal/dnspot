@@ -195,6 +195,10 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			// }
 
 			msg := cryptography.DecodeToBytes(msgRaw)
+			// basic sanity check on msg length
+			if len(msg) < 16 {
+				return out, errors.New("invalid request")
+			}
 			// if err != nil {
 			// 	return out, errors.New("invalid base36 input: %s", msgRaw)
 			// }
@@ -238,4 +242,15 @@ func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacket
 		return packets
 	}
 	return nil
+}
+
+// a very fast hashing function, mainly used for de-duplication
+func FNV1A(input []byte) uint64 {
+	var hash uint64 = 0xcbf29ce484222325
+	var fnv_prime uint64 = 0x100000001b3
+	for _, b := range input {
+		hash ^= uint64(b)
+		hash *= fnv_prime
+	}
+	return hash
 }
