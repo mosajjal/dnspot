@@ -43,6 +43,7 @@ func main() {
 	}
 
 	cmdServer.Flags().StringVarP(&conf.GlobalServerConfig.LogFile, "logFile", "", "", "Log output file. Optional")
+	cmdServer.Flags().StringVarP(&conf.GlobalServerConfig.OutFile, "outFile", "", "", "Output File to record only the commands and their responses")
 	cmdServer.Flags().Uint8VarP(&conf.GlobalServerConfig.LogLevel, "logLevel", "", 1, "Log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 	cmdServer.Flags().StringVarP(&conf.GlobalServerConfig.PrivateKeyBasexx, "privateKey", "", "", "Private Key used")
 	cmdServer.MarkFlagRequired("privateKey")

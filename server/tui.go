@@ -1,7 +1,6 @@
 package server
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/mosajjal/dnspot/cryptography"
@@ -54,7 +53,6 @@ func RunTui() {
 			}
 			agent, _ := UiAgentList.GetItemText(UiAgentList.GetCurrentItem())
 			pubkey, _ := cryptography.PublicKeyFromString(agent)
-			fmt.Fprintln(UiLog, agent) //todo:remove
 			RunCommandOnAgent(pubkey, UiCmd.GetFormItem(0).(*tview.InputField).GetText())
 			UiCmd.GetFormItem(0).(*tview.InputField).SetText("")
 		})

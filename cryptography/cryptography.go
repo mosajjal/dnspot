@@ -2,7 +2,6 @@ package cryptography
 
 import (
 	"bytes"
-	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/elliptic"
@@ -23,18 +22,16 @@ type PrivateKey struct {
 
 var Algorithm = elliptic.P256()
 
-func Encrypt(key crypto.PublicKey, signature crypto.PrivateKey, data []byte) (encrypted []byte, err error) {
+func Encrypt(public *PublicKey, private *PrivateKey, data []byte) (encrypted []byte, err error) {
 	if len(data) < 1 {
 		err = errors.New("empty data")
 		return
 	}
-	public := key.(*PublicKey)
 	if public == nil {
 		err = errors.New("invalid public key")
 		return
 	}
 
-	private := signature.(*PrivateKey)
 	pub := private.GetPublicKey()
 	ephemeral := elliptic.MarshalCompressed(pub.Curve, pub.X, pub.Y)
 	sym, _ := public.Curve.ScalarMult(public.X, public.Y, private.D)
@@ -73,18 +70,21 @@ func Encrypt(key crypto.PublicKey, signature crypto.PrivateKey, data []byte) (en
 	encrypted = buf.Bytes()
 	return
 }
-func Decrypt(key crypto.PrivateKey, data []byte) (decrypted []byte, err error) {
+func Decrypt(private *PrivateKey, data []byte) (decrypted []byte, err error) {
 	if len(data) < 82 {
 		err = errors.New("invalid data size")
 		return
 	}
-	private := key.(*PrivateKey)
 	if private == nil {
 		err = errors.New("invalid private key")
 		return
 	}
 	buf := bytes.Buffer{}
 	x, y := elliptic.UnmarshalCompressed(Algorithm, data[0:33])
+	if x == nil || y == nil {
+		err = errors.New("invalid public key")
+		return
+	}
 
 	sym, _ := Algorithm.ScalarMult(x, y, private.D)
 	_, err = buf.Write(sym.Bytes())
