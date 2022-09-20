@@ -131,6 +131,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		msg.ParentPartID = uint16(rand.Uint32()) + 1
 		parentPartID = msg.ParentPartID
 	}
+	//todo: maybe a cap on the number of limbs here, as well as some progress logging inside the loop?
 	for i := 0; i < len(limbs); i++ {
 		if retryCount == 0 {
 			return response, parentPartID, errors.New("failed to send message after 10 attempts")
@@ -142,7 +143,9 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		copy(msg.Payload[:], limbs[i])
 		var buf bytes.Buffer
 		buf.Reset()
-		struc.Pack(&buf, &msg)
+		if err := struc.Pack(&buf, &msg); err != nil {
+			return response, parentPartID, errors.New("failed to encrypt the payload")
+		}
 		encrypted, err := cryptography.Encrypt(serverPublicKey, privateKey, buf.Bytes())
 		if err != nil {
 			return response, parentPartID, errors.New("failed to encrypt the payload")

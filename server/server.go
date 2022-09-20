@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"os"
 	"strings"
@@ -30,7 +29,7 @@ func errorHandler(err error) {
 
 var ServerPacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignature)
 
-//3d buffer for public key and parentpartID. first string is the public key
+// 3d buffer for public key and parentpartID. first string is the public key
 var outgoingBuffer = make(map[string]map[uint16][]string)
 var dedupHashTable = make(map[uint64]bool)
 
@@ -141,10 +140,10 @@ func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey)
 	rdata := bytes.NewReader(out)
 	r, err := gzip.NewReader(rdata)
 	if err == nil {
-		out, _ = ioutil.ReadAll(r)
+		out, _ = io.ReadAll(r)
 	}
 	log.Infof("Command result: %s", out)
-	fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n ------\n", signature.String(), string(out))
+	fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
 }
 
 func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
@@ -299,21 +298,21 @@ func MessageSetHealthIntervalHandler(Packet c2.MessagePacketWithSignature, q *dn
 	return nil
 }
 
-func executeFunction(packets []c2.MessagePacketWithSignature) error {
-	fullPayload := make([]byte, 0)
-	packets = c2.CheckMessageIntegrity(packets)
-	for _, packet := range packets {
-		packetPayload := packet.Msg.Payload[:]
-		fullPayload = append(fullPayload, packetPayload...)
-	}
-	log.Warnf("%s, coming from %s\n", fullPayload, packets[0].Signature.String())
-	// todo: clean the memory for this parentpartID
-	return nil
-}
+// func executeFunction(packets []c2.MessagePacketWithSignature) error {
+// 	fullPayload := make([]byte, 0)
+// 	packets = c2.CheckMessageIntegrity(packets)
+// 	for _, packet := range packets {
+// 		packetPayload := packet.Msg.Payload[:]
+// 		fullPayload = append(fullPayload, packetPayload...)
+// 	}
+// 	log.Warnf("%s, coming from %s\n", fullPayload, packets[0].Signature.String())
+// 	// todo: clean the memory for this parentpartID
+// 	return nil
+// }
 
-func cleanupBuffer(timeout time.Duration) error {
-	return nil //todo
-}
+// func cleanupBuffer(timeout time.Duration) error {
+// 	return nil //todo
+// }
 
 func isMsgDuplicate(data []byte) bool {
 	// dedup checks
@@ -377,7 +376,9 @@ func handle53(w dns.ResponseWriter, r *dns.Msg) {
 			log.Warnf("bad request: %s", err)
 		}
 	}
-	w.WriteMsg(m)
+	if err := w.WriteMsg(m); err != nil {
+		log.Warnln(err)
+	}
 }
 
 func runDns(cmd *cobra.Command) {
@@ -389,7 +390,9 @@ func runDns(cmd *cobra.Command) {
 	log.Infof("Started DNS on %s -- listening", server.Addr)
 	err := server.ListenAndServe()
 	errorHandler(err)
-	defer server.Shutdown()
+	if err := server.Shutdown(); err != nil {
+		log.Warnln(err)
+	}
 
 }
 
