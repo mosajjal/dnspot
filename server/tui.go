@@ -53,7 +53,7 @@ func RunTui() {
 			}
 			agent, _ := UiAgentList.GetItemText(UiAgentList.GetCurrentItem())
 			pubkey, _ := cryptography.PublicKeyFromString(agent)
-			RunCommandOnAgent(pubkey, UiCmd.GetFormItem(0).(*tview.InputField).GetText())
+			_ = RunCommandOnAgent(pubkey, UiCmd.GetFormItem(0).(*tview.InputField).GetText())
 			UiCmd.GetFormItem(0).(*tview.InputField).SetText("")
 		})
 
