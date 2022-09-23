@@ -15,23 +15,26 @@ import (
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
-type MessageType uint8
-
 const (
-	PAYLOAD_SIZE = 80
-	CHUNK_SIZE   = 80
+	PAYLOAD_SIZE = int(80)
+	CHUNK_SIZE   = int(80)
 )
+
+type MsgType uint8
+type CmdType uint8
 
 // Message codes
 const (
-	MessageHealthcheck       MessageType = 0
-	MessageSyncTime          MessageType = 1
-	MessageExecuteCommand    MessageType = 2
-	MessageExecuteCommandRes MessageType = 3
-	MessageSetHealthInterval MessageType = 4
-	MessageClientSendFile    MessageType = 5
-	MessageClientGetFile     MessageType = 6
-	// MessageLogService  Message = 5
+	MessageHealthcheck MsgType = iota
+	MessageSyncTime
+	MessageExecuteCommand
+	MessageExecuteCommandResponse
+	MessageSetHealthInterval
+)
+
+const (
+	CommandExec CmdType = iota
+	CommandEcho
 )
 
 // healthCheck gets sent by the agent every n seconds
@@ -45,12 +48,13 @@ const (
 // if IsLastPart == true -> last packet
 
 type MessagePacket struct {
-	Payload      [PAYLOAD_SIZE]byte `struc:"[80]byte,little"`
-	TimeStamp    uint32             `struc:"uint32,little"`
-	PartID       uint16             `struc:"uint16,little"`
-	ParentPartID uint16             `struc:"uint16,little"`
-	MessageType  MessageType        `struc:"uint8,little"`
-	IsLastPart   bool               `struc:"bool,little"`
+	Payload      [80]byte `struc:"[80]byte,little"`
+	TimeStamp    uint32   `struc:"uint32,little"`
+	PartID       uint16   `struc:"uint16,little"`
+	ParentPartID uint16   `struc:"uint16,little"`
+	MessageType  MsgType  `struc:"uint8,little"`
+	Command      CmdType  `struc:"uint8,little"`
+	IsLastPart   bool     `struc:"bool,little"`
 }
 
 type MessagePacketWithSignature struct {
