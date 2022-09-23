@@ -21,6 +21,7 @@ var GlobalServerConfig struct {
 	AcceptedClientKeysBasexx []string
 	AcceptedClientKeys       *[]cryptography.PublicKey
 	DnsSuffix                string
+	Mode                     string
 }
 
 var GlobalAgentConfig struct {

