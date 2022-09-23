@@ -53,7 +53,8 @@ func RunTui() {
 			}
 			agent, _ := UiAgentList.GetItemText(UiAgentList.GetCurrentItem())
 			pubkey, _ := cryptography.PublicKeyFromString(agent)
-			_ = RunCommandOnAgent(pubkey, UiCmd.GetFormItem(0).(*tview.InputField).GetText())
+			//todo: change this to another function that takes into account which mode is being used
+			_ = SendMessageToAgent(pubkey, UiCmd.GetFormItem(0).(*tview.InputField).GetText())
 			UiCmd.GetFormItem(0).(*tview.InputField).SetText("")
 		})
 

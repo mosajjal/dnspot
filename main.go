@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/miekg/dns"
@@ -48,6 +47,7 @@ func main() {
 	cmdServer.Flags().StringSliceVarP(&conf.GlobalServerConfig.AcceptedClientKeysBasexx, "acceptedClientKeys", "", []string{}, "Accepted Client Keys")
 	cmdServer.Flags().StringVarP(&conf.GlobalServerConfig.DnsSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
 	_ = cmdServer.MarkFlagRequired("dnsSuffix")
+	cmdServer.Flags().StringVarP(&conf.GlobalServerConfig.Mode, "mode", "", "exec", "Run mode. choices: exec, chat")
 
 	// the Agent (client) command
 	var cmdAgent = &cobra.Command{
@@ -58,7 +58,7 @@ func main() {
 		and based on the received data, it will potentially take actions`,
 		Args: cobra.ExactArgs(0),
 		Run: func(cmd *cobra.Command, args []string) {
-			log.Fatalln(agent.RunAgent(cmd, args))
+			_ = (agent.RunAgent(cmd, args))
 		},
 	}
 
@@ -89,5 +89,5 @@ func main() {
 
 	var rootCmd = &cobra.Command{Use: "dnspot"}
 	rootCmd.AddCommand(cmdServer, cmdAgent, cmdGenerateKey)
-	log.Fatalln(rootCmd.Execute())
+	_ = rootCmd.Execute()
 }
