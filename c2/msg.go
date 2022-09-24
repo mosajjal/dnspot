@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	PAYLOAD_SIZE = int(80)
-	CHUNK_SIZE   = int(80)
+	PAYLOAD_SIZE = int(70)
+	CHUNK_SIZE   = int(90)
 )
 
 type MsgType uint8
@@ -48,7 +48,7 @@ const (
 // if IsLastPart == true -> last packet
 
 type MessagePacket struct {
-	Payload      [80]byte `struc:"[80]byte,little"`
+	Payload      [70]byte `struc:"[70]byte,little"`
 	TimeStamp    uint32   `struc:"uint32,little"`
 	PartID       uint16   `struc:"uint16,little"`
 	ParentPartID uint16   `struc:"uint16,little"`
@@ -83,7 +83,8 @@ func insertNth(s string, n int) string {
 	for i, rune := range s {
 		buffer.WriteRune(rune)
 		if i%n == n_1 && i != l_1 {
-			buffer.WriteRune('.')
+			buffer.WriteByte('.') //dot char in DNS
+			// buffer.WriteRune('.')
 		}
 	}
 	return buffer.String()
@@ -158,7 +159,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		s := cryptography.EncodeBytes(encrypted)
 		// padding
 		// s = strings.ReplaceAll(s, "=", "")
-		response = append(response, insertNth(s, 63)+dnsSuffix)
+		response = append(response, insertNth(s, 50)+dnsSuffix)
 		msg.PartID++
 	}
 

