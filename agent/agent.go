@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -63,7 +65,7 @@ func runCommand(command string, cmdType c2.CmdType, timestamp uint32) {
 	case c2.CommandEcho:
 		fmt.Printf("[SERVER AT %v]: %s\n", time.Unix(int64(timestamp), 0), command)
 		AgentStatus.NextMessageType = c2.MessageExecuteCommandResponse
-		AgentStatus.NextPayload = []byte("chatted")
+		AgentStatus.NextPayload = []byte("msg delivered")
 	}
 }
 
@@ -158,6 +160,16 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 	return nil
 }
 
+// SendMessageToServer is the mirror of SendMessageToAgent on agent's side.
+// it allows the agent to send arbitrary messeges to the server. At the moment
+// this will not disrupt the flow of healthcheck messages coming from the agent
+// and those message should be dismissed on the server side during this transmission
+func SendMessageToServer(msg string) {
+	log.Infoln("sending message to server")
+	AgentStatus.NextMessageType = c2.MessageExecuteCommandResponse
+	AgentStatus.NextPayload = []byte(msg)
+}
+
 func SendQuestionToServer(Q string) error {
 	if len(Q) < 255 {
 		// todo: implement retry here
@@ -198,7 +210,7 @@ func sendHealthCheck() error {
 
 func RunAgent(cmd *cobra.Command, args []string) error {
 	log.SetLevel(log.Level(conf.GlobalAgentConfig.LogLevel))
-	if conf.GlobalAgentConfig.LogLevel == uint8(log.DebugLevel) {
+	if conf.GlobalAgentConfig.LogLevel >= uint8(log.DebugLevel) {
 		log.SetReportCaller(true)
 	}
 
@@ -236,6 +248,20 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 	if err := sendHealthCheck(); err != nil {
 		log.Warnln(err)
 	}
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		for {
+			fmt.Print("-> ")
+			text, _ := reader.ReadString('\n')
+			// convert CRLF to LF
+			text = strings.Replace(text, "\n", "", -1)
+			if err != nil {
+				log.Errorln("can't find a key to send a message to")
+			} else {
+				SendMessageToServer(text)
+			}
+		}
+	}()
 
 	for {
 		select {
