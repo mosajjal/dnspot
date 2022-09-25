@@ -71,7 +71,10 @@ func Encrypt(public *PublicKey, private *PrivateKey, data []byte) (encrypted []b
 	return
 }
 func Decrypt(private *PrivateKey, data []byte) (decrypted []byte, err error) {
-	if len(data) < 82 {
+	// with variable length, this is meaningless. however, DNS servers sometimes
+	// send a subdomain of our request to the server rather than the full query
+	// so some checks need to be in place
+	if len(data) < 34 {
 		err = errors.New("invalid data size")
 		return
 	}

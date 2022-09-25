@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/miekg/dns"
@@ -63,7 +64,7 @@ func main() {
 	}
 
 	cmdAgent.Flags().DurationVarP(&conf.GlobalAgentConfig.CommandTimeout, "timeout", "", 2*time.Second, "Timeout for DNS requests")
-	cmdAgent.Flags().Uint8VarP(&conf.GlobalAgentConfig.LogLevel, "loglevel", "", 1, "log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
+	cmdAgent.Flags().Uint8VarP(&conf.GlobalAgentConfig.LogLevel, "logLevel", "", 1, "log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.PrivateKeyBasexx, "privateKey", "", "", "Private Key used. Generates one on the fly if empty")
 	// cmdAgent.MarkFlagRequired("privateKey")
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.ServerPublicKeyBasexx, "serverPublicKey", "", "", "Server's public Key")
@@ -73,6 +74,9 @@ func main() {
 	cmdAgent.Flags().StringVarP(&conf.GlobalAgentConfig.ServerAddress, "serverAddress", "", "", "DNS Server to use. You can specify custom port here. Leave blank to use system's DNS server")
 	if conf.GlobalAgentConfig.ServerAddress == "" {
 		systemDNS, _ := dns.ClientConfigFromFile("/etc/resolv.conf")
+		if len(systemDNS.Servers) < 1 {
+			log.Fatalln("could not determine OS's default resolver. Please manually specify a DNS server")
+		}
 		conf.GlobalAgentConfig.ServerAddress = systemDNS.Servers[0] + ":53"
 	}
 
