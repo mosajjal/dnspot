@@ -35,6 +35,9 @@ var ServerPacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignat
 var outgoingBuffer = make(map[string]map[uint16][]string)
 var dedupHashTable = make(map[uint64]bool)
 
+// dedupPrevMsgHash is only for consecutive message duplicates
+var dedupPrevMsgHash uint64
+
 type agentStatusForServer struct {
 	LastAckFromAgentServerTime      uint32
 	LastAckFromAgentPacketTime      uint32
@@ -120,13 +123,17 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey) {
 	// probably should save this in a temp file rather than log. //todo
 	out := bytes.Trim(fullPayload, "\x00")
+	if c2.FNV1A(out) == uint64(dedupPrevMsgHash) {
+		return
+	}
+	dedupPrevMsgHash = c2.FNV1A(out)
 	rdata := bytes.NewReader(out)
 	r, err := gzip.NewReader(rdata)
 	if err == nil {
 		out, _ = io.ReadAll(r)
 	}
 	//todo: this could be a chat coming in from the agent, so "command result" might not be appropiate
-	fmt.Printf("Command result: %s\n", out)
+	fmt.Printf("[%s]: %s\n", signature.String(), out)
 	// we only need the result printed in exec mode. in echo mode, this is just a "sent" tickbox
 	if conf.GlobalServerConfig.Mode == "exec" {
 		fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
@@ -359,24 +366,25 @@ func parseQuery(m *dns.Msg) error {
 		log.Infof("Duplicate message received, discarding")
 		return nil
 	}
-	outs, err := c2.DecryptIncomingPacket(m, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, nil)
+	outs, skip, err := c2.DecryptIncomingPacket(m, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, nil)
 	if err != nil {
 		log.Infof("Error in Decrypting incoming packet: %v", err)
 	}
-	for _, o := range outs {
-		switch msgType := o.Msg.MessageType; msgType {
-		case c2.MessageHealthcheck:
-			return MessageHealthcheckHandler(o, m)
-		case c2.MessageExecuteCommand:
-			return HandleRunCommandAckFromAgent(o, m)
-		case c2.MessageExecuteCommandResponse:
-			return HandleExecuteCommandResponse(o, m)
-		case c2.MessageSetHealthInterval:
-			return nil //
-		case c2.MessageSyncTime:
-			return nil // automatically done as part of routine healthcheck
+	if !skip {
+		for _, o := range outs {
+			switch msgType := o.Msg.MessageType; msgType {
+			case c2.MessageHealthcheck:
+				return MessageHealthcheckHandler(o, m)
+			case c2.MessageExecuteCommand:
+				return HandleRunCommandAckFromAgent(o, m)
+			case c2.MessageExecuteCommandResponse:
+				return HandleExecuteCommandResponse(o, m)
+			case c2.MessageSetHealthInterval:
+				return nil //
+			case c2.MessageSyncTime:
+				return nil // automatically done as part of routine healthcheck
+			}
 		}
-
 	}
 
 	// }
@@ -431,7 +439,6 @@ func RunServer(cmd *cobra.Command, args []string) {
 	conf.Mode = conf.RunAsServer
 	log.SetLevel(log.Level(conf.GlobalServerConfig.LogLevel))
 	if conf.GlobalServerConfig.LogLevel >= uint8(log.DebugLevel) {
-		fmt.Println("here") //todo:remove
 		log.SetReportCaller(true)
 	}
 	if conf.GlobalServerConfig.LogFile != "" {

