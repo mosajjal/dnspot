@@ -12,14 +12,14 @@ import (
 
 	"github.com/lunixbochs/struc"
 	"github.com/miekg/dns"
-	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
-	PAYLOAD_SIZE = int(70)
-	CHUNK_SIZE   = uint8(90)
+	PAYLOAD_SIZE         = int(70)
+	CHUNK_SIZE           = uint8(90)
+	CompressionThreshold = 1024 * 2 // 2KB
 )
 
 type MsgType uint8
@@ -116,7 +116,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	// TODO: fix duplicate sending
 
 	// handle compression
-	if len(payload) > conf.CompressionThreshold {
+	if len(payload) > CompressionThreshold {
 		var b bytes.Buffer
 		gz, _ := gzip.NewWriterLevel(&b, gzip.BestCompression)
 		if _, err := gz.Write(payload); err != nil {

