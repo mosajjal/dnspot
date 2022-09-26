@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"encoding/binary"
@@ -13,17 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	log "github.com/sirupsen/logrus"
-
 	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/c2"
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
 var Config struct {
-	LogFile                  string
-	OutFile                  string
-	LogLevel                 uint8
 	PrivateKeyBase36         string
 	privateKey               *cryptography.PrivateKey
 	ListenAddress            string
@@ -32,10 +26,19 @@ var Config struct {
 	acceptedClientKeys       *[]cryptography.PublicKey
 	DnsSuffix                string
 	Mode                     string
+	io                       ServerIO
 }
 
+const (
+	DEBUG = uint8(iota)
+	INFO
+	WARN
+	ERR
+	FATAL
+)
+
 // todo: come up with i/o
-var IO interface {
+type ServerIO interface {
 	Logger(level uint8, format string, args ...interface{})
 	GetInputFeed() chan string
 	GetOutputFeed() chan string
@@ -65,11 +68,11 @@ var CommandWriter io.Writer
 // log received healthcheck. if the agent is due to run a task, the server's response
 // to the healthcheck will become different.
 func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
-	log.Infof("Healthcheck, coming from %s", Packet.Signature)
+	Config.io.Logger(INFO, "Healthcheck, coming from %s", Packet.Signature)
 	//register new agent in agent list
 	agent, ok := ConnectedAgents[Packet.Signature.String()]
 	if !ok {
-		log.Infof("Registering new agent in our Connected Agent List, %d agent(s) are connected", len(ConnectedAgents)+1)
+		Config.io.Logger(INFO, "Registering new agent in our Connected Agent List, %d agent(s) are connected", len(ConnectedAgents)+1)
 
 		// UiAgentList.AddItem(Packet.Signature.String(), "", rune(len(ConnectedAgents)+65), nil)
 		ConnectedAgents[Packet.Signature.String()] = agentStatusForServer{
@@ -95,21 +98,21 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 		//todo: should we pass it on to MessageSyncTimeHandler function here?
 
 		// todo: check the actual next message time here and send a message appropriately
-		log.Infof("preparing a response for a healthcheck message")
+		Config.io.Logger(INFO, "preparing a response for a healthcheck message")
 		msg := c2.MessagePacket{
 			TimeStamp:   uint32(time.Now().Unix()),
 			MessageType: agent.NextMessageType,
 		}
 		Answers, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Packet.Signature)
 		if err != nil {
-			log.Errorf("Error preparing a response for a healthcheck message: %s", err.Error())
+			Config.io.Logger(ERR, "Error preparing a response for a healthcheck message: %s", err.Error())
 			return err
 		}
 
 		for _, A := range Answers {
 			cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 			if err != nil {
-				log.Warnf("Error: %v", err) //todo:fix
+				Config.io.Logger(WARN, "%s", err)
 			}
 			q.Answer = append(q.Answer, cname)
 		}
@@ -124,7 +127,8 @@ func MessageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 		}
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId][0])) //todo:fix the 0 index
 		if err != nil {
-			log.Warnf("Error: %v", err) //todo:fix
+			Config.io.Logger(WARN, "%s", err)
+
 		}
 		q.Answer = append(q.Answer, cname)
 	}
@@ -145,17 +149,17 @@ func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey)
 		out, _ = io.ReadAll(r)
 	}
 	//todo: this could be a chat coming in from the agent, so "command result" might not be appropiate
-	fmt.Printf("[%s]: %s\n", signature.String(), out)
+	Config.io.GetOutputFeed() <- fmt.Sprintf("[%s]: %s", signature.String(), out)
 	// we only need the result printed in exec mode. in echo mode, this is just a "sent" tickbox
-	if Config.Mode == "exec" {
-		fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
-	}
+	// if Config.Mode == "exec" {
+	// 	fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
+	// }
 }
 
 func HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
 	_, ok := ConnectedAgents[Packet.Signature.String()]
 	if !ok {
-		log.Errorf("Agent not recognized")
+		Config.io.Logger(ERR, "agent not recognized")
 	}
 	// handle multipart incoming
 	ServerPacketBuffersWithSignature[int(Packet.Msg.ParentPartID)] = append(ServerPacketBuffersWithSignature[int(Packet.Msg.ParentPartID)], Packet)
@@ -175,13 +179,13 @@ func HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.M
 		ConnectedAgents[Packet.Signature.String()] = agent
 		payload = []byte("Ack! Last Part")
 	}
-	// log.Infof("sending plyload %#v\n", msg)
+	// Config.io.Logger(INFO,"sending plyload %#v\n", msg)
 	// time.Sleep(2 * time.Second)
 	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Packet.Signature)
 	for _, A := range Answers {
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 		if err != nil {
-			log.Warnf("Error: %v", err) //todo:fix
+			Config.io.Logger(WARN, "%s", err)
 		}
 		q.Answer = append(q.Answer, cname)
 	}
@@ -219,7 +223,7 @@ func MustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.Public
 			outgoingBuffer[agentPublicKey.String()] = make(map[uint16][]string)
 			outgoingBuffer[agentPublicKey.String()][parentPartId] = append(outgoingBuffer[agentPublicKey.String()][parentPartId], Answers[0])
 		}
-		log.Infof("key and ParentPartId already exist in the buffer, overwriting...")
+		Config.io.Logger(INFO, "key and ParentPartId already exist in the buffer, overwriting...")
 
 	} else {
 		//initialize the map
@@ -227,7 +231,7 @@ func MustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.Public
 		targetBuffer = append(targetBuffer, Answers...)
 		outgoingBuffer[agentPublicKey.String()][parentPartId] = targetBuffer
 	}
-	log.Infof("command was successfully added to outgoing buffer to be sent")
+	Config.io.Logger(INFO, "command was successfully added to outgoing buffer to be sent")
 
 	// set NextMessageType to let the healthcheck responder know
 	agent := ConnectedAgents[agentPublicKey.String()]
@@ -244,7 +248,8 @@ func MustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.Public
 // because it'll now consider they message type as a configuration item and
 // can provide command execution as well as chat.
 func SendMessageToAgent(agentPublicKey *cryptography.PublicKey, command string) error {
-	fmt.Fprintf(CommandWriter, "sending message '%s' on %s\n", command, agentPublicKey.String())
+	// fmt.Fprintf(CommandWriter, "sending message '%s' on %s\n", command, agentPublicKey.String())
+
 	var cmdType c2.CmdType
 	if Config.Mode == "chat" {
 		cmdType = c2.CommandEcho
@@ -275,12 +280,12 @@ func MessageChatHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error 
 	}
 	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId][acknowledgedId+1]))
 	if err != nil {
-		log.Warnf("Error: %v", err) //todo:fix
+		Config.io.Logger(WARN, "%s", err)
 	}
 	// todo: go back to the healthcheck handler and send the next packet
 	// todo: print output
 	q.Answer = append(q.Answer, cname)
-	// log.Infof("sending chat message '%s' to the client", command)
+	// Config.io.Logger(INFO,"sending chat message '%s' to the client", command)
 	//msg := c2.MessagePacket{
 	//	TimeStamp:   uint32(time.Now().Unix()),
 	//	MessageType: c2.MessageChat,
@@ -302,11 +307,11 @@ func MessageChatResResHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) 
 
 // remove idle agents after 60 seconds
 func RemoveIdleAgents() {
-	log.Infof("Removing idle agents")
+	Config.io.Logger(INFO, "Removing idle agents")
 	for k, v := range ConnectedAgents {
 		idleTime := time.Now().Unix() - int64(v.LastAckFromAgentServerTime)
 		if idleTime > 60 {
-			log.Infof("removing agent %s since it has been idle for %d seconds", k, idleTime)
+			Config.io.Logger(INFO, "removing agent %s since it has been idle for %d seconds", k, idleTime)
 			delete(ConnectedAgents, k)
 			// for i := range UiAgentList.FindItems(k, "", false, true) {
 			// 	UiAgentList.RemoveItem(i)
@@ -331,7 +336,7 @@ func HandleRunCommandAckFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	}
 	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartId][acknowledgedId+1]))
 	if err != nil {
-		log.Warnf("Error: %v", err) //todo:fix
+		Config.io.Logger(WARN, "%s", err)
 	}
 	// todo: go back to the healthcheck handler and send the next packet
 	// todo: print output
@@ -350,7 +355,7 @@ func MessageSetHealthIntervalHandler(Packet c2.MessagePacketWithSignature, q *dn
 	for _, A := range Answers {
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 		if err != nil {
-			log.Warnf("Error: %v", err) //todo:fix
+			Config.io.Logger(WARN, "%s", err)
 		}
 		q.Answer = append(q.Answer, cname)
 	}
@@ -375,12 +380,12 @@ func parseQuery(m *dns.Msg) error {
 	// since the C2 works by A questions at the moment, we cna check dedup by looking at the first question
 	// todo: test this
 	if isMsgDuplicate([]byte(m.Question[0].Name)) {
-		log.Infof("Duplicate message received, discarding")
+		Config.io.Logger(INFO, "Duplicate message received, discarding")
 		return nil
 	}
 	outs, skip, err := c2.DecryptIncomingPacket(m, Config.DnsSuffix, Config.privateKey, nil)
 	if err != nil {
-		log.Infof("Error in Decrypting incoming packet: %v", err)
+		Config.io.Logger(INFO, "Error in Decrypting incoming packet: %v", err)
 	}
 	if !skip {
 		for _, o := range outs {
@@ -413,11 +418,11 @@ func handle53(w dns.ResponseWriter, r *dns.Msg) {
 	case dns.OpcodeQuery:
 		err := parseQuery(m)
 		if err != nil {
-			log.Warnf("bad request: %s", err)
+			Config.io.Logger(WARN, "%s", err)
 		}
 	}
 	if err := w.WriteMsg(m); err != nil {
-		log.Warnln(err)
+		Config.io.Logger(WARN, "%s", err)
 	}
 }
 
@@ -427,13 +432,13 @@ func runDns() {
 
 	// start server
 	server := &dns.Server{Addr: Config.ListenAddress, Net: "udp"}
-	log.Infof("Started DNS on %s -- listening", server.Addr)
+	Config.io.Logger(INFO, "Started DNS on %s -- listening", server.Addr)
 	err := server.ListenAndServe()
 	if err != nil {
-		log.Fatalln(err)
+		Config.io.Logger(FATAL, "%s", err)
 	}
 	if err := server.Shutdown(); err != nil {
-		log.Warnln(err)
+		Config.io.Logger(WARN, "%s", err)
 	}
 
 }
@@ -448,40 +453,17 @@ func First(m map[string]agentStatusForServer) (out string) {
 	return
 }
 
-func RunServer() {
+func RunServer(serverIo ServerIO) {
+	Config.io = serverIo
+
 	// set global flag that we're running as server
-	log.SetLevel(log.Level(Config.LogLevel))
-	if Config.LogLevel >= uint8(log.DebugLevel) {
-		log.SetReportCaller(true)
-	}
-	if Config.LogFile != "" {
-		f, err := os.OpenFile(Config.LogFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-		if err != nil {
-			log.Fatalf("error opening file: %v", err)
-		}
-		mw := io.MultiWriter(os.Stdout, f)
-		log.SetOutput(mw)
-	} else {
-		log.SetOutput(os.Stdout)
-	}
-
-	if Config.OutFile != "" {
-		f, err := os.OpenFile(Config.OutFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
-		if err != nil {
-			log.Fatalf("error opening file: %v", err)
-		}
-		CommandWriter = io.MultiWriter(os.Stdout, f)
-	} else {
-		CommandWriter = os.Stdout
-	}
-
 	var err error
 	Config.privateKey, err = cryptography.PrivateKeyFromString(Config.PrivateKeyBase36)
 	if err != nil {
-		log.Fatalln(err)
+		Config.io.Logger(FATAL, "%s", err)
 	}
 
-	log.Infof("Use the following public key to connect clients: %s", Config.privateKey.GetPublicKey().String())
+	Config.io.Logger(INFO, "Use the following public key to connect clients: %s", Config.privateKey.GetPublicKey().String())
 
 	// todo: public keys
 
@@ -495,17 +477,13 @@ func RunServer() {
 	go runDns()
 
 	go func() {
-		reader := bufio.NewReader(os.Stdin)
-		for {
-			fmt.Print("-> ")
-			text, _ := reader.ReadString('\n')
-			// convert CRLF to LF
-			text = strings.Replace(text, "\n", "", -1)
+		for text := range Config.io.GetInputFeed() {
+			Config.io.Logger(1, "here") //todo:remove
 			agent := First(ConnectedAgents)
 			// agent, _ := UiAgentList.GetItemText(UiAgentList.GetCurrentItem())
 			pubkey, err := cryptography.PublicKeyFromString(agent)
 			if err != nil {
-				log.Errorln("can't find a key to send a message to")
+				Config.io.Logger(ERR, "can't find a key to send a message to: %s", err)
 			} else if len(text) > 0 {
 				_ = SendMessageToAgent(pubkey, text)
 			}
