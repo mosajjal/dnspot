@@ -8,7 +8,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mosajjal/dnspot/agent"
@@ -38,10 +40,14 @@ func (io CmdIO) GetOutputFeed() chan string {
 func (io CmdIO) Handler() {
 
 	reader := bufio.NewReader(os.Stdin)
+	fmt.Println("Press Ctrl+D to exit")
 	go func() {
 		for {
 			fmt.Print("-> ")
-			text, _ := reader.ReadString('\n')
+			text, err := reader.ReadString('\n')
+			if err != nil {
+				os.Exit(0)
+			}
 			// convert CRLF to LF
 			text = strings.Replace(text, "\n", "", -1)
 			if len(text) > 0 {
@@ -143,4 +149,21 @@ func main() {
 	var rootCmd = &cobra.Command{Use: "dnspot"}
 	rootCmd.AddCommand(cmdServer, cmdAgent, cmdGenerateKey)
 	_ = rootCmd.Execute()
+
+	// handle interrupts
+	signalChannel := make(chan os.Signal, 2)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-signalChannel
+		switch sig {
+		case os.Interrupt:
+			os.Exit(0)
+		case syscall.SIGTERM:
+			os.Exit(0)
+		}
+	}()
+
+	// block
+	select {}
+
 }

@@ -6,10 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
@@ -478,8 +475,7 @@ func RunServer(serverIo ServerIO) {
 
 	go func() {
 		for text := range Config.io.GetInputFeed() {
-			Config.io.Logger(1, "here") //todo:remove
-			agent := First(ConnectedAgents)
+			agent := First(ConnectedAgents) //todo: this will always send it to the first agent, needs to be configurable
 			// agent, _ := UiAgentList.GetItemText(UiAgentList.GetCurrentItem())
 			pubkey, err := cryptography.PublicKeyFromString(agent)
 			if err != nil {
@@ -490,19 +486,7 @@ func RunServer(serverIo ServerIO) {
 		}
 	}()
 
-	// handle interrupts
-	signalChannel := make(chan os.Signal, 2)
-	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		sig := <-signalChannel
-		switch sig {
-		case os.Interrupt:
-			os.Exit(0)
-		case syscall.SIGTERM:
-			os.Exit(0)
-		}
-	}()
-
-	select {}
+	// fmt.Println("here") //todo:remove
+	// select {}
 
 }
