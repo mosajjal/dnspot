@@ -21,23 +21,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type CmdIO struct {
+type cmdIO struct {
 	in     chan string
 	out    chan string
 	logger zerolog.Logger
 }
 
-func (io CmdIO) Logger(level uint8, format string, args ...interface{}) {
+func (io cmdIO) Logger(level uint8, format string, args ...interface{}) {
 	io.logger.WithLevel(zerolog.Level(level)).Msgf(format, args...)
 }
-func (io CmdIO) GetInputFeed() chan string {
+func (io cmdIO) GetInputFeed() chan string {
 	return io.in
 }
-func (io CmdIO) GetOutputFeed() chan string {
+func (io cmdIO) GetOutputFeed() chan string {
 	return io.out
 }
 
-func (io CmdIO) Handler() {
+func (io cmdIO) Handler() {
 
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Press Ctrl+D to exit")
@@ -65,7 +65,7 @@ func (io CmdIO) Handler() {
 
 func main() {
 
-	var io CmdIO
+	var io cmdIO
 	io.in = make(chan string, 1)
 	io.out = make(chan string, 1)
 	go io.Handler()
@@ -102,7 +102,7 @@ func main() {
 	cmdServer.Flags().StringVarP(&server.Config.ListenAddress, "listenAddress", "", "0.0.0.0:53", "Listen Socket")
 	cmdServer.Flags().BoolVarP(&server.Config.EnforceClientKeys, "enforceClientKeys", "", false, "Enforce client keys. Need to provide a list of accepted public keys if set to true")
 	cmdServer.Flags().StringSliceVarP(&server.Config.AcceptedClientKeysBase36, "acceptedClientKeys", "", []string{}, "Accepted Client Keys")
-	cmdServer.Flags().StringVarP(&server.Config.DnsSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
+	cmdServer.Flags().StringVarP(&server.Config.DNSSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
 	_ = cmdServer.MarkFlagRequired("dnsSuffix")
 	cmdServer.Flags().StringVarP(&server.Config.Mode, "mode", "", "exec", "Run mode. choices: exec, chat")
 
