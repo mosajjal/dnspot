@@ -11,18 +11,21 @@ import (
 	"math/big"
 )
 
+// PublicKey has the curve and the X,Y.
 type PublicKey struct {
 	elliptic.Curve
 	X, Y *big.Int
 }
 
+// PrivateKey is a bytestream of data not converted to anything
 type PrivateKey struct {
 	D []byte
 }
 
-var Algorithm = elliptic.P256()
+var algorithm = elliptic.P256()
 
-func Encrypt(public *PublicKey, private *PrivateKey, data []byte) (encrypted []byte, err error) {
+// Encrypt will provide a encryption mechanism for an arbitrary bytestream
+func (private *PrivateKey) Encrypt(public *PublicKey, data []byte) (encrypted []byte, err error) {
 	if len(data) < 1 {
 		err = errors.New("empty data")
 		return
@@ -70,7 +73,9 @@ func Encrypt(public *PublicKey, private *PrivateKey, data []byte) (encrypted []b
 	encrypted = buf.Bytes()
 	return
 }
-func Decrypt(private *PrivateKey, data []byte) (decrypted []byte, err error) {
+
+// Decrypt will provide a decryption mechanism for an arbitrary bytestream
+func (private *PrivateKey) Decrypt(data []byte) (decrypted []byte, err error) {
 	// with variable length, this is meaningless. however, DNS servers sometimes
 	// send a subdomain of our request to the server rather than the full query
 	// so some checks need to be in place
@@ -83,13 +88,13 @@ func Decrypt(private *PrivateKey, data []byte) (decrypted []byte, err error) {
 		return
 	}
 	buf := bytes.Buffer{}
-	x, y := elliptic.UnmarshalCompressed(Algorithm, data[0:33])
+	x, y := elliptic.UnmarshalCompressed(algorithm, data[0:33])
 	if x == nil || y == nil {
 		err = errors.New("invalid public key")
 		return
 	}
 
-	sym, _ := Algorithm.ScalarMult(x, y, private.D)
+	sym, _ := algorithm.ScalarMult(x, y, private.D)
 	_, err = buf.Write(sym.Bytes())
 	if err != nil {
 		return
@@ -117,39 +122,45 @@ func Decrypt(private *PrivateKey, data []byte) (decrypted []byte, err error) {
 	return
 }
 
-func (key PrivateKey) String() string {
-	return EncodeBytes(key.D)
+// String marshaller for private key
+func (private PrivateKey) String() string {
+	return EncodeBytes(private.D)
 }
+
+// String marshaller for public key
 func (key PublicKey) String() string {
 	return EncodeBytes(elliptic.MarshalCompressed(key.Curve, key.X, key.Y))
 }
 
-func (key PrivateKey) GetPublicKey() PublicKey {
-	x, y := Algorithm.ScalarBaseMult(key.D)
+// GetPublicKey returns a PublicKey object from the key
+func (private PrivateKey) GetPublicKey() PublicKey {
+	x, y := algorithm.ScalarBaseMult(private.D)
 	return PublicKey{
-		Curve: Algorithm,
+		Curve: algorithm,
 		X:     x,
 		Y:     y,
 	}
 }
 
+// PublicKeyFromString grabs a public key string and gives out a publickey object
 func PublicKeyFromString(public string) (*PublicKey, error) {
 	publicKey := DecodeToBytes(public)
 
 	// if err != nil {
 	// 	return nil, err
 	// }
-	x, y := elliptic.UnmarshalCompressed(Algorithm, publicKey)
+	x, y := elliptic.UnmarshalCompressed(algorithm, publicKey)
 	if x == nil || y == nil {
 		return nil, errors.New("invalid public key")
 	}
 	return &PublicKey{
-		Curve: Algorithm,
+		Curve: algorithm,
 		X:     x,
 		Y:     y,
 	}, nil
 }
 
+// PrivateKeyFromString grabs a private key string and gives out a privatekey object
 func PrivateKeyFromString(private string) (*PrivateKey, error) {
 	d := DecodeToBytes(private)
 	if len(d) == 0 {
@@ -160,8 +171,9 @@ func PrivateKeyFromString(private string) (*PrivateKey, error) {
 	}, nil
 }
 
+// GenerateKey generate a new random private key
 func GenerateKey() (*PrivateKey, error) {
-	d, _, _, err := elliptic.GenerateKey(Algorithm, rand.Reader)
+	d, _, _, err := elliptic.GenerateKey(algorithm, rand.Reader)
 	if err != nil {
 		return nil, err
 	}
@@ -170,6 +182,7 @@ func GenerateKey() (*PrivateKey, error) {
 	}, nil
 }
 
+// GenerateKeypair generates a public and private keypair string
 func GenerateKeypair() (pub string, priv string) {
 
 	privateKey, err := GenerateKey()
@@ -183,10 +196,12 @@ func GenerateKeypair() (pub string, priv string) {
 	return
 }
 
+// GetPublicKeyFromMessage is a helper function to extract first 32 bytes
+// from a long message, and provide the sender public key of it
 func GetPublicKeyFromMessage(msg []byte) *PublicKey {
-	x, y := elliptic.UnmarshalCompressed(Algorithm, msg[0:33])
+	x, y := elliptic.UnmarshalCompressed(algorithm, msg[0:33])
 	return &PublicKey{
-		Curve: Algorithm,
+		Curve: algorithm,
 		X:     x,
 		Y:     y,
 	}

@@ -9,7 +9,7 @@ import (
 	"github.com/rivo/tview"
 )
 
-type TuiIO struct {
+type tuiIO struct {
 	in     chan string
 	out    chan string
 	logger io.Writer
@@ -18,15 +18,15 @@ type TuiIO struct {
 // todo: this needs to be a parameter
 const loglevel = 5
 
-func (io TuiIO) Logger(level uint8, format string, args ...interface{}) {
+func (io tuiIO) Logger(level uint8, format string, args ...interface{}) {
 	if level > loglevel {
 		fmt.Fprintf(io.logger, format+"\n", args...)
 	}
 }
-func (io TuiIO) GetInputFeed() chan string {
+func (io tuiIO) GetInputFeed() chan string {
 	return io.in
 }
-func (io TuiIO) GetOutputFeed() chan string {
+func (io tuiIO) GetOutputFeed() chan string {
 	return io.out
 }
 
@@ -52,14 +52,14 @@ func uiUpdater(root *tview.Application) {
 	}
 }
 
-func (io TuiIO) Handler() {
+func (io tuiIO) Handler() {
 	for out := range io.out {
 		io.Logger(4, out)
 	}
 }
 
 func main() {
-	UiRoot := tview.NewApplication()
+	UIRoot := tview.NewApplication()
 	uiAgentList := tview.NewList()
 	uiAgentList.SetTitle("Agents").SetBorder(true)
 	// todo: set log level somewhere
@@ -68,7 +68,7 @@ func main() {
 	uiCmdInput := tview.NewForm()
 	uiCmdInput.SetTitle("Command").SetBorder(true)
 
-	var io TuiIO
+	var io tuiIO
 	io.in = make(chan string, 1)
 	io.out = make(chan string, 1)
 	io.logger = uiLogger
@@ -85,7 +85,7 @@ func main() {
 			server.Config.Mode = mode
 			server.Config.ListenAddress = uiConfig.GetFormItemByLabel("Listen Address").(*tview.InputField).GetText()
 			server.Config.PrivateKeyBase36 = uiConfig.GetFormItemByLabel("Private Key").(*tview.InputField).GetText()
-			server.Config.DnsSuffix = uiConfig.GetFormItemByLabel("DNS Suffix").(*tview.InputField).GetText()
+			server.Config.DNSSuffix = uiConfig.GetFormItemByLabel("DNS Suffix").(*tview.InputField).GetText()
 			server.RunServer(io)
 			uiCmdInput.SetFocus(0)
 		})
@@ -118,10 +118,10 @@ func main() {
 
 	go io.Handler()
 	// refresh UI and remove idle nodes as a goroutine
-	go uiUpdater(UiRoot)
+	go uiUpdater(UIRoot)
 
 	// below is a blocking code
-	if err := UiRoot.SetRoot(grid, true).SetFocus(grid).EnableMouse(true).Run(); err != nil {
+	if err := UIRoot.SetRoot(grid, true).SetFocus(grid).EnableMouse(true).Run(); err != nil {
 		panic(err)
 	}
 }

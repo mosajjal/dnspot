@@ -21,7 +21,11 @@ const (
 	CompressionThreshold = 1024 * 2 // 2KB
 )
 
+// MsgType defines the type of each message (healtcheck, synctime, execute command etc)
+// This is different from CmdType
 type MsgType uint8
+
+// CmdType defines which type of work this tunnel with be. currently Exec and Echo are supported
 type CmdType uint8
 
 // Message codes
@@ -34,7 +38,9 @@ const (
 )
 
 const (
+	// CommandExec execute command on the agents
 	CommandExec CmdType = iota
+	// CommandEcho is a chat system. Not echo lol
 	CommandEcho
 )
 
@@ -48,6 +54,7 @@ const (
 // if ParentPartID != 0 -> incoming packets in the order of their PartID
 // if IsLastPart == true -> last packet
 
+// MessagePacket is the payload that will be on the wire for each DNS query and response
 type MessagePacket struct {
 	TimeStamp     uint32  `struc:"uint32,little"`
 	PartID        uint16  `struc:"uint16,little"`
@@ -59,11 +66,13 @@ type MessagePacket struct {
 	Payload       []byte  `struc:"[]byte,little"`
 }
 
+// MessagePacketWithSignature adds Signature to each packet separetely to help with reconstruction of packets
 type MessagePacketWithSignature struct {
 	Signature *cryptography.PublicKey
 	Msg       MessagePacket
 }
 
+// PerformExternalAQuery is a very basic A query provider. TODO: this needs to move to github.com/mosajjal/dnsclient
 func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 	question := dns.Question{Name: Q, Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	c := new(dns.Client)
@@ -83,11 +92,11 @@ func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 func insertNth(s string, n int) (int, string) {
 	var buffer bytes.Buffer
 	numberOfDots := 0
-	var n_1 = n - 1
-	var l_1 = len(s) - 1
+	var n1 = n - 1
+	var l1 = len(s) - 1
 	for i, rune := range s {
 		buffer.WriteRune(rune)
-		if i%n == n_1 && i != l_1 {
+		if i%n == n1 && i != l1 {
 			numberOfDots++
 			buffer.WriteByte('.') //dot char in DNS
 			// buffer.WriteRune('.')
@@ -109,7 +118,7 @@ func split(buf []byte, lim int) [][]byte {
 	return chunks
 }
 
-// Gets a big payload that needs to be sent over the wire, chops it up into smaller limbs and creates a list of messages to be sent. It also sends the parentPartID to make sure the series
+// PreparePartitionedPayload Gets a big payload that needs to be sent over the wire, chops it up into smaller limbs and creates a list of messages to be sent. It also sends the parentPartID to make sure the series
 // of messages are not lost
 func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, uint16, error) {
 	// TODO: fix duplicate sending
@@ -159,7 +168,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		if err := struc.Pack(&buf, &msg); err != nil {
 			return response, parentPartID, err
 		}
-		encrypted, err := cryptography.Encrypt(serverPublicKey, privateKey, buf.Bytes())
+		encrypted, err := privateKey.Encrypt(serverPublicKey, buf.Bytes())
 		if err != nil {
 			return response, parentPartID, err
 		}
@@ -234,7 +243,7 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 			// 	return out, errors.New("invalid base36 input: %s", msgRaw)
 			// }
 			// verify signature
-			decrypted, err := cryptography.Decrypt(privatekey, msg)
+			decrypted, err := privatekey.Decrypt(msg)
 			if err != nil {
 				//todo: since a lot of these are noise and duplicates, maybe we can skip putting this as error
 				// when a DNS client sends a request like a.b.c.d.myc2.com, some recurisve DNS
@@ -257,6 +266,8 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 	return out, false, nil
 }
 
+// CheckMessageIntegrity gets a list of packets with their signatures
+// and returns another packet list that are sorted, deduplicated and are complete
 func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacketWithSignature {
 	//sort, uniq and remove duplicates. then check if the message is complete
 
@@ -279,13 +290,13 @@ func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacket
 	return nil
 }
 
-// a very fast hashing function, mainly used for de-duplication
+// FNV1A a very fast hashing function, mainly used for de-duplication
 func FNV1A(input []byte) uint64 {
 	var hash uint64 = 0xcbf29ce484222325
-	var fnv_prime uint64 = 0x100000001b3
+	var fnvPrime uint64 = 0x100000001b3
 	for _, b := range input {
 		hash ^= uint64(b)
-		hash *= fnv_prime
+		hash *= fnvPrime
 	}
 	return hash
 }
