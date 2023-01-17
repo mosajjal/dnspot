@@ -134,7 +134,6 @@ func messageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 
 // shows the output of any command run by agent and sent back to us.
 func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey) {
-	// probably should save this in a temp file rather than log. //todo
 	out := bytes.Trim(fullPayload, "\x00")
 	if c2.FNV1A(out) == uint64(dedupPrevMsgHash) {
 		return

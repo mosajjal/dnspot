@@ -291,6 +291,7 @@ func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacket
 }
 
 // FNV1A a very fast hashing function, mainly used for de-duplication
+// TODO: explore cityhash and murmurhash
 func FNV1A(input []byte) uint64 {
 	var hash uint64 = 0xcbf29ce484222325
 	var fnvPrime uint64 = 0x100000001b3
