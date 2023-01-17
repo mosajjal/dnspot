@@ -63,7 +63,7 @@ func reset() {
 func runCommand(command string, cmdType c2.CmdType, timestamp uint32) {
 	switch cmdType {
 	case c2.CommandExec:
-		Config.io.Logger(INFO, "Running command: ", command)
+		Config.io.Logger(INFO, "running command: %s", command)
 
 		// Create a new context and add a timeout to it
 		ctx, cancel := context.WithTimeout(context.Background(), Config.CommandTimeout)
@@ -105,7 +105,7 @@ func handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 	}
 	command := msgList[0] // todo: handle multiple commands at the same time?
 	status.LastAckFromServer = command.Msg.TimeStamp
-	Config.io.Logger(INFO, "got message from Server: Type: %v, Payload: %s", command.Msg.MessageType, command.Msg.Payload)
+	Config.io.Logger(DEBUG, "got message from Server: Type: %v, Payload: %s", command.Msg.MessageType, command.Msg.Payload)
 
 	// execution for last/single packets
 	switch msgType := command.Msg.MessageType; msgType {
