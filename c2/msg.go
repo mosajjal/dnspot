@@ -72,6 +72,22 @@ type MessagePacketWithSignature struct {
 	Msg       MessagePacket
 }
 
+// since the comms channel for DNS is out of our hands, we need to implement a dedup method for any bytestream
+type dedup map[uint64]struct{}
+
+// Add function gets a byte array and adds it to the dedup table. returns true if the key is new, false if it already exists
+func (d *dedup) Add(keyBytes []byte) bool {
+	//calculate FNV1A
+	key := FNV1A(keyBytes)
+	if _, ok := (*d)[key]; ok {
+		return false
+	}
+	(*d)[key] = struct{}{}
+	return true
+}
+
+var DedupHashTable dedup = make(map[uint64]struct{})
+
 // PerformExternalAQuery is a very basic A query provider. TODO: this needs to move to github.com/mosajjal/dnsclient
 func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 	question := dns.Question{Name: Q, Qtype: dns.TypeA, Qclass: dns.ClassINET}
@@ -89,7 +105,7 @@ func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 
 // inserNth takes a string and inserts a dot char every nth char.
 // returns the number of dots inserted, plus the modified string
-func insertNth(s string, n int) (int, string) {
+func insertNth(s string, n int) string {
 	var buffer bytes.Buffer
 	numberOfDots := 0
 	var n1 = n - 1
@@ -99,10 +115,13 @@ func insertNth(s string, n int) (int, string) {
 		if i%n == n1 && i != l1 {
 			numberOfDots++
 			buffer.WriteByte('.') //dot char in DNS
-			// buffer.WriteRune('.')
 		}
 	}
-	return numberOfDots, buffer.String()
+	// write number of dots to the end of the string
+	// TODO: there's a small chance that the last char is a dot, which makes this a double dot. fix this
+	buffer.WriteByte('.')
+	buffer.WriteString(fmt.Sprintf("%d", numberOfDots))
+	return buffer.String()
 }
 
 func split(buf []byte, lim int) [][]byte {
@@ -174,11 +193,9 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		}
 
 		s := cryptography.EncodeBytes(encrypted)
-		// padding
-		// s = strings.ReplaceAll(s, "=", "")
-		//todo: record number of dots as a char in the query
-		numberofdots, fqdn := insertNth(s, 60)
-		response = append(response, fqdn+"."+fmt.Sprint(numberofdots)+dnsSuffix)
+
+		fqdn := insertNth(s, 60)
+		response = append(response, fqdn+dnsSuffix)
 		msg.PartID++
 	}
 
@@ -202,10 +219,10 @@ func getSubdomainsFromDnsMessage(m *dns.Msg) []string {
 	return res
 }
 
+// DecryptIncomingPacket decrypts the incoming packet and returns the list of messages, a boolean indicating if the message should be skipped, and an error
 func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.PrivateKey, publickey *cryptography.PublicKey) ([]MessagePacketWithSignature, bool, error) {
 	out := []MessagePacketWithSignature{}
 	listOfSubdomains := getSubdomainsFromDnsMessage(m)
-
 	for _, sub := range listOfSubdomains {
 		if strings.HasSuffix(sub, suffix) {
 
@@ -217,32 +234,33 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 
 			// remove the number of dots from FQDN
 			lastSubdomainIndex := strings.LastIndex(requestWithoutSuffix, ".")
-			if lastSubdomainIndex == -1 {
-				return out, true, fmt.Errorf("subdomain count mismatch 1 %d %s", lastSubdomainIndex, requestWithoutSuffix) //todo:make this a better logic.
+			if lastSubdomainIndex == -1 { // if there is no dot, then the request is invalid
+				return out, true, fmt.Errorf("incomplete DNS request %s", requestWithoutSuffix)
 			}
 			numberOfDots := requestWithoutSuffix[lastSubdomainIndex+1:]
 			requestWithoutSuffix = requestWithoutSuffix[:lastSubdomainIndex]
 
-			if fmt.Sprint(strings.Count(requestWithoutSuffix, ".")) != numberOfDots {
-				return out, true, fmt.Errorf("subdomain count mismatch 2 %s %s", numberOfDots, requestWithoutSuffix) //todo:make this a better logic.
+			dotCount := strings.Count(requestWithoutSuffix, ".")
+			// the reason why dotcount is being checked is when a client asks for A.B.C.domain.com from 1.1.1.1 with the suffix of domain.com,
+			// 1.1.1.1 sends C.domain.com first, then B.C.domain.com and then the full request
+			// since anything other than A.B.C is invalid, we can skip the first two requests, which we do by checking the number of dots in the request
+			if fmt.Sprint(dotCount) != numberOfDots {
+				return out, true, fmt.Errorf("subdomain count mismatch. expected %s, got %d", numberOfDots, dotCount)
 			}
 
 			msgRaw := strings.Replace(requestWithoutSuffix, ".", "", -1)
 			// // padding
 			// if i := len(msgRaw) % 8; i != 0 {
-			// 	msgRaw += strings.Repeat("=", 8-i)
+			// 	msgRaw += strings.Repeat("=", 8-i)w
 			// }
 
 			msg := cryptography.DecodeToBytes(msgRaw)
-			// basic sanity check on msg length
-			// commented this out since we're now using variable length
-			// if len(msg) < 32 {
-			// 	return out, true, errors.New("invalid request")
-			// }
-			// if err != nil {
-			// 	return out, errors.New("invalid base36 input: %s", msgRaw)
-			// }
-			// verify signature
+
+			// check duplicate msg
+			if !DedupHashTable.Add(msg) {
+				return out, true, fmt.Errorf("duplicate message")
+			}
+
 			decrypted, err := privatekey.Decrypt(msg)
 			if err != nil {
 				//todo: since a lot of these are noise and duplicates, maybe we can skip putting this as error
