@@ -119,9 +119,19 @@ func main() {
 		},
 	}
 
-	var rootCmd = &cobra.Command{Use: "dnspot"}
-	rootCmd.AddCommand(cmdServer, cmdGenerateKey)
-	_ = rootCmd.Execute()
+	// var rootCmd = &cobra.Command{Use: "dnspot"}
+	// rootCmd.AddCommand(cmdServer, cmdGenerateKey)
+	// _ = rootCmd.Execute()
+
+	cmdServer.AddCommand(cmdGenerateKey)
+	if err := cmdServer.Execute(); err != nil {
+		os.Exit(1)
+	} else {
+		// Exit if help was called
+		if cmdServer.Flags().Changed("help") {
+			os.Exit(0)
+		}
+	}
 
 	// handle interrupts
 	signalChannel := make(chan os.Signal, 2)

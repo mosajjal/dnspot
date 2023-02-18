@@ -110,9 +110,15 @@ func main() {
 		},
 	}
 
-	var rootCmd = &cobra.Command{Use: "dnspot"}
-	rootCmd.AddCommand(cmdAgent, cmdGenerateKey)
-	_ = rootCmd.Execute()
+	cmdAgent.AddCommand(cmdGenerateKey)
+	if err := cmdAgent.Execute(); err != nil {
+		os.Exit(1)
+	} else {
+		// Exit if help was called
+		if cmdAgent.Flags().Changed("help") {
+			os.Exit(0)
+		}
+	}
 
 	// handle interrupts
 	signalChannel := make(chan os.Signal, 2)
