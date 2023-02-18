@@ -62,6 +62,7 @@ func (io cmdIO) Handler() {
 }
 
 func main() {
+	server := server.Server{}
 
 	var io cmdIO
 	io.in = make(chan string, 1)
@@ -95,14 +96,14 @@ func main() {
 	cmdServer.Flags().String("outFile", "", "Output File to record only the commands and their responses")
 	cmdServer.Flags().Uint8("logLevel", 1, "Log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 
-	cmdServer.Flags().StringVarP(&server.Server.PrivateKeyBase36, "privateKey", "", "", "Private Key used")
+	cmdServer.Flags().StringVarP(&server.PrivateKeyBase36, "privateKey", "", "", "Private Key used")
 	_ = cmdServer.MarkFlagRequired("privateKey")
-	cmdServer.Flags().StringVarP(&server.Server.ListenAddress, "listenAddress", "", "0.0.0.0:53", "Listen Socket")
-	cmdServer.Flags().BoolVarP(&server.Server.EnforceClientKeys, "enforceClientKeys", "", false, "Enforce client keys. Need to provide a list of accepted public keys if set to true")
-	cmdServer.Flags().StringSliceVarP(&server.Server.AcceptedClientKeysBase36, "acceptedClientKeys", "", []string{}, "Accepted Client Keys")
-	cmdServer.Flags().StringVarP(&server.Server.DNSSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
+	cmdServer.Flags().StringVarP(&server.ListenAddress, "listenAddress", "", "0.0.0.0:53", "Listen Socket")
+	cmdServer.Flags().BoolVarP(&server.EnforceClientKeys, "enforceClientKeys", "", false, "Enforce client keys. Need to provide a list of accepted public keys if set to true")
+	cmdServer.Flags().StringSliceVarP(&server.AcceptedClientKeysBase36, "acceptedClientKeys", "", []string{}, "Accepted Client Keys")
+	cmdServer.Flags().StringVarP(&server.DNSSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
 	_ = cmdServer.MarkFlagRequired("dnsSuffix")
-	cmdServer.Flags().StringVarP(&server.Server.Mode, "mode", "", "exec", "Run mode. choices: exec, chat")
+	cmdServer.Flags().StringVarP(&server.Mode, "mode", "", "exec", "Run mode. choices: exec, chat")
 
 	// helper function to spit out keys
 	var cmdGenerateKey = &cobra.Command{
