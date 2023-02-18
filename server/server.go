@@ -26,6 +26,7 @@ var Config struct {
 	io                       IO
 }
 
+// log levels
 const (
 	DEBUG = uint8(iota)
 	INFO

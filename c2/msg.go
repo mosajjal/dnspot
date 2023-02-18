@@ -16,8 +16,11 @@ import (
 )
 
 const (
-	PAYLOAD_SIZE         = int(70)
-	CHUNK_SIZE           = uint8(90)
+	// PayloadSize is the maximum number of bytes that can be fit inside a C2 Msg object. it will have the added headers before being sent on wire
+	PayloadSize = int(70)
+	// ChunkSize determines how much data each DNS query or response has. after converting the msg of ChunkSize to base32, it shouldn't exceed ~250 bytes
+	ChunkSize = uint8(90)
+	// CompressionThreshold sets the minimum msg size to be compressed. anything lower than this size will be sent uncompressed
 	CompressionThreshold = 1024 * 2 // 2KB
 )
 
@@ -86,6 +89,7 @@ func (d *dedup) Add(keyBytes []byte) bool {
 	return true
 }
 
+// DedupHashTable is an empty map with the hash of the payload as key.
 var DedupHashTable dedup = make(map[uint64]struct{})
 
 // PerformExternalAQuery is a very basic A query provider. TODO: this needs to move to github.com/mosajjal/dnsclient
@@ -162,7 +166,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	var response []string
 	var parentPartID uint16 = 0
 	// retryCount := 1 //todo: retry of >1 could cause message duplicates
-	limbs := split(payload, int(CHUNK_SIZE))
+	limbs := split(payload, int(ChunkSize))
 	if len(limbs) > 1 {
 		msg.IsLastPart = false
 		msg.PartID = 0
@@ -203,7 +207,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 }
 
 // returns a list of subdomains from a dns message. if the msg type is answer, only answers are returned, otherwise only questions
-func getSubdomainsFromDnsMessage(m *dns.Msg) []string {
+func getSubdomainsFromDNSMessage(m *dns.Msg) []string {
 	var res []string
 	if len(m.Answer) > 0 {
 		// for _, a := range m.Answer {
@@ -222,7 +226,7 @@ func getSubdomainsFromDnsMessage(m *dns.Msg) []string {
 // DecryptIncomingPacket decrypts the incoming packet and returns the list of messages, a boolean indicating if the message should be skipped, and an error
 func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.PrivateKey, publickey *cryptography.PublicKey) ([]MessagePacketWithSignature, bool, error) {
 	out := []MessagePacketWithSignature{}
-	listOfSubdomains := getSubdomainsFromDnsMessage(m)
+	listOfSubdomains := getSubdomainsFromDNSMessage(m)
 	for _, sub := range listOfSubdomains {
 		if strings.HasSuffix(sub, suffix) {
 

