@@ -59,6 +59,9 @@ func (io tuiIO) Handler() {
 }
 
 func main() {
+
+	server := server.Server{}
+
 	UIRoot := tview.NewApplication()
 	uiAgentList := tview.NewList()
 	uiAgentList.SetTitle("Agents").SetBorder(true)
@@ -82,10 +85,10 @@ func main() {
 		AddDropDown("Mode", []string{"chat", "exec"}, 0, nil).
 		AddButton("Start Server", func() {
 			_, mode := uiConfig.GetFormItemByLabel("Mode").(*tview.DropDown).GetCurrentOption()
-			server.Server.Mode = mode
-			server.Server.ListenAddress = uiConfig.GetFormItemByLabel("Listen Address").(*tview.InputField).GetText()
-			server.Server.PrivateKeyBase36 = uiConfig.GetFormItemByLabel("Private Key").(*tview.InputField).GetText()
-			server.Server.DNSSuffix = uiConfig.GetFormItemByLabel("DNS Suffix").(*tview.InputField).GetText()
+			server.Mode = mode
+			server.ListenAddress = uiConfig.GetFormItemByLabel("Listen Address").(*tview.InputField).GetText()
+			server.PrivateKeyBase36 = uiConfig.GetFormItemByLabel("Private Key").(*tview.InputField).GetText()
+			server.DNSSuffix = uiConfig.GetFormItemByLabel("DNS Suffix").(*tview.InputField).GetText()
 			server.RunServer(io)
 			uiCmdInput.SetFocus(0)
 		})
