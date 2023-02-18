@@ -92,7 +92,7 @@ func main() {
 	cmdAgent.Flags().StringVarP(&agent.PrivateKeyBase36, "privateKey", "", "", "Private Key used. Generates one on the fly if empty")
 	cmdAgent.Flags().StringVarP(&agent.ServerPublicKeyBase36, "serverPublicKey", "", "", "Server's public Key")
 	_ = cmdAgent.MarkFlagRequired("serverPublicKey")
-	cmdAgent.Flags().StringVarP(&agent.DnsSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
+	cmdAgent.Flags().StringVarP(&agent.DNSSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
 	_ = cmdAgent.MarkFlagRequired("dnsSuffix")
 	cmdAgent.Flags().StringVarP(&agent.ServerAddress, "serverAddress", "", "", "DNS Server to use. You can specify custom port here. Leave blank to use system's DNS server")
 

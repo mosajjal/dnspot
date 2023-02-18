@@ -14,7 +14,7 @@ import (
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
-var Config struct {
+var Server struct {
 	PrivateKeyBase36         string
 	privateKey               *cryptography.PrivateKey
 	ListenAddress            string
@@ -60,16 +60,15 @@ type agentStatusForServer struct {
 
 // first string is the public key
 var connectedAgents = make(map[string]agentStatusForServer)
-var commandWriter io.Writer
 
 // log received healthcheck. if the agent is due to run a task, the server's response
 // to the healthcheck will become different.
 func messageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
-	Config.io.Logger(INFO, "Healthcheck, coming from %s", Packet.Signature)
+	Server.io.Logger(INFO, "Healthcheck, coming from %s", Packet.Signature)
 	//register new agent in agent list
 	agent, ok := connectedAgents[Packet.Signature.String()]
 	if !ok {
-		Config.io.Logger(INFO, "Registering new agent in our Connected Agent List, %d agent(s) are connected", len(connectedAgents)+1)
+		Server.io.Logger(INFO, "Registering new agent in our Connected Agent List, %d agent(s) are connected", len(connectedAgents)+1)
 
 		// UiAgentList.AddItem(Packet.Signature.String(), "", rune(len(ConnectedAgents)+65), nil)
 		connectedAgents[Packet.Signature.String()] = agentStatusForServer{
@@ -95,21 +94,21 @@ func messageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 		//todo: should we pass it on to MessageSyncTimeHandler function here?
 
 		// todo: check the actual next message time here and send a message appropriately
-		Config.io.Logger(INFO, "preparing a response for a healthcheck message")
+		Server.io.Logger(INFO, "preparing a response for a healthcheck message")
 		msg := c2.MessagePacket{
 			TimeStamp:   uint32(time.Now().Unix()),
 			MessageType: agent.NextMessageType,
 		}
-		Answers, _, err := c2.PreparePartitionedPayload(msg, payload, Config.DNSSuffix, Config.privateKey, Packet.Signature)
+		Answers, _, err := c2.PreparePartitionedPayload(msg, payload, Server.DNSSuffix, Server.privateKey, Packet.Signature)
 		if err != nil {
-			Config.io.Logger(ERR, "Error preparing a response for a healthcheck message: %s", err.Error())
+			Server.io.Logger(ERR, "Error preparing a response for a healthcheck message: %s", err.Error())
 			return err
 		}
 
 		for _, A := range Answers {
 			cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 			if err != nil {
-				Config.io.Logger(WARN, "%s", err)
+				Server.io.Logger(WARN, "%s", err)
 			}
 			q.Answer = append(q.Answer, cname)
 		}
@@ -124,7 +123,7 @@ func messageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg)
 		}
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartID][0])) //todo:fix the 0 index
 		if err != nil {
-			Config.io.Logger(WARN, "%s", err)
+			Server.io.Logger(WARN, "%s", err)
 
 		}
 		q.Answer = append(q.Answer, cname)
@@ -145,17 +144,13 @@ func displayCommandResult(fullPayload []byte, signature *cryptography.PublicKey)
 		out, _ = io.ReadAll(r)
 	}
 	//todo: this could be a chat coming in from the agent, so "command result" might not be appropiate
-	Config.io.GetOutputFeed() <- fmt.Sprintf("[%s]: %s", signature.String(), out)
-	// we only need the result printed in exec mode. in echo mode, this is just a "sent" tickbox
-	// if Config.Mode == "exec" {
-	// 	fmt.Fprintf(CommandWriter, "command result coming from %s:\n%s\n------\n", signature.String(), string(out))
-	// }
+	Server.io.GetOutputFeed() <- fmt.Sprintf("[%s]: %s", signature.String(), out)
 }
 
 func HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
 	_, ok := connectedAgents[Packet.Signature.String()]
 	if !ok {
-		Config.io.Logger(ERR, "agent not recognized")
+		Server.io.Logger(ERR, "agent not recognized")
 	}
 	// handle multipart incoming
 	serverPacketBuffersWithSignature[int(Packet.Msg.ParentPartID)] = append(serverPacketBuffersWithSignature[int(Packet.Msg.ParentPartID)], Packet)
@@ -177,11 +172,11 @@ func HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.M
 	}
 	// Config.io.Logger(INFO,"sending plyload %#v\n", msg)
 	// time.Sleep(2 * time.Second)
-	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, Config.DNSSuffix, Config.privateKey, Packet.Signature)
+	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, Server.DNSSuffix, Server.privateKey, Packet.Signature)
 	for _, A := range Answers {
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 		if err != nil {
-			Config.io.Logger(WARN, "%s", err)
+			Server.io.Logger(WARN, "%s", err)
 		}
 		q.Answer = append(q.Answer, cname)
 	}
@@ -207,7 +202,7 @@ func HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.M
 
 func mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.PublicKey, msg string) error {
 	// As part of the incoming packet, we'll get the partid as well as parentPartID so we know which part to send next. we just need to cache the whole partition up
-	Answers, parentPartID, _ := c2.PreparePartitionedPayload(msgPacket, []byte(msg), Config.DNSSuffix, Config.privateKey, agentPublicKey)
+	Answers, parentPartID, _ := c2.PreparePartitionedPayload(msgPacket, []byte(msg), Server.DNSSuffix, Server.privateKey, agentPublicKey)
 	//todo: single part messages always have parentPartId = 0, so we need to check if it's single part or multi part and probably don't cache
 	//todo: what are we getting from the client? let's decrypt and log those
 
@@ -219,7 +214,7 @@ func mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.Public
 			outgoingBuffer[agentPublicKey.String()] = make(map[uint16][]string)
 			outgoingBuffer[agentPublicKey.String()][parentPartID] = append(outgoingBuffer[agentPublicKey.String()][parentPartID], Answers[0])
 		}
-		Config.io.Logger(INFO, "key and ParentPartId already exist in the buffer, overwriting...")
+		Server.io.Logger(INFO, "key and ParentPartId already exist in the buffer, overwriting...")
 
 	} else {
 		//initialize the map
@@ -227,7 +222,7 @@ func mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.Public
 		targetBuffer = append(targetBuffer, Answers...)
 		outgoingBuffer[agentPublicKey.String()][parentPartID] = targetBuffer
 	}
-	Config.io.Logger(INFO, "command was successfully added to outgoing buffer to be sent")
+	Server.io.Logger(INFO, "command was successfully added to outgoing buffer to be sent")
 
 	// set NextMessageType to let the healthcheck responder know
 	agent := connectedAgents[agentPublicKey.String()]
@@ -244,13 +239,12 @@ func mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.Public
 // because it'll now consider they message type as a configuration item and
 // can provide command execution as well as chat.
 func sendMessageToAgent(agentPublicKey *cryptography.PublicKey, command string) error {
-	// fmt.Fprintf(CommandWriter, "sending message '%s' on %s\n", command, agentPublicKey.String())
 
 	var cmdType c2.CmdType
-	if Config.Mode == "chat" {
+	if Server.Mode == "chat" {
 		cmdType = c2.CommandEcho
 	}
-	if Config.Mode == "exec" {
+	if Server.Mode == "exec" {
 		cmdType = c2.CommandExec
 	}
 	msg := c2.MessagePacket{
@@ -276,7 +270,7 @@ func messageChatHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error 
 	}
 	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartID][acknowledgedID+1]))
 	if err != nil {
-		Config.io.Logger(WARN, "%s", err)
+		Server.io.Logger(WARN, "%s", err)
 	}
 	// todo: go back to the healthcheck handler and send the next packet
 	// todo: print output
@@ -303,11 +297,11 @@ func messageChatResResHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) 
 
 // remove idle agents after 60 seconds
 func removeIdleAgents() {
-	Config.io.Logger(INFO, "Removing idle agents")
+	Server.io.Logger(INFO, "Removing idle agents")
 	for k, v := range connectedAgents {
 		idleTime := time.Now().Unix() - int64(v.LastAckFromAgentServerTime)
 		if idleTime > 60 {
-			Config.io.Logger(INFO, "removing agent %s since it has been idle for %d seconds", k, idleTime)
+			Server.io.Logger(INFO, "removing agent %s since it has been idle for %d seconds", k, idleTime)
 			delete(connectedAgents, k)
 			// for i := range UiAgentList.FindItems(k, "", false, true) {
 			// 	UiAgentList.RemoveItem(i)
@@ -332,7 +326,7 @@ func handleRunCommandAckFromAgent(Packet c2.MessagePacketWithSignature, q *dns.M
 	}
 	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, outgoingBuffer[Packet.Signature.String()][agent.NextParentPartID][acknowledgedID+1]))
 	if err != nil {
-		Config.io.Logger(WARN, "%s", err)
+		Server.io.Logger(WARN, "%s", err)
 	}
 	// todo: go back to the healthcheck handler and send the next packet
 	// todo: print output
@@ -347,11 +341,11 @@ func messageSetHealthIntervalHandler(Packet c2.MessagePacketWithSignature, q *dn
 	}
 	payload := []byte{}
 	binary.BigEndian.PutUint32(payload, durationMilliseconds)
-	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, Config.DNSSuffix, Config.privateKey, Packet.Signature)
+	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, Server.DNSSuffix, Server.privateKey, Packet.Signature)
 	for _, A := range Answers {
 		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
 		if err != nil {
-			Config.io.Logger(WARN, "%s", err)
+			Server.io.Logger(WARN, "%s", err)
 		}
 		q.Answer = append(q.Answer, cname)
 	}
@@ -365,9 +359,9 @@ func parseQuery(m *dns.Msg) error {
 	// 	Config.io.Logger(INFO, "Duplicate message received, discarding")
 	// 	return nil
 	// }
-	outs, skip, err := c2.DecryptIncomingPacket(m, Config.DNSSuffix, Config.privateKey, nil)
+	outs, skip, err := c2.DecryptIncomingPacket(m, Server.DNSSuffix, Server.privateKey, nil)
 	if err != nil {
-		Config.io.Logger(INFO, "Error in Decrypting incoming packet: %v", err)
+		Server.io.Logger(INFO, "Error in Decrypting incoming packet: %v", err)
 	}
 	if !skip {
 		for _, o := range outs {
@@ -400,11 +394,11 @@ func handle53(w dns.ResponseWriter, r *dns.Msg) {
 	case dns.OpcodeQuery:
 		err := parseQuery(m)
 		if err != nil {
-			Config.io.Logger(WARN, "%s", err)
+			Server.io.Logger(WARN, "%s", err)
 		}
 	}
 	if err := w.WriteMsg(m); err != nil {
-		Config.io.Logger(WARN, "%s", err)
+		Server.io.Logger(WARN, "%s", err)
 	}
 }
 
@@ -413,14 +407,14 @@ func runDNS() {
 	dns.HandleFunc(".", handle53)
 
 	// start server
-	server := &dns.Server{Addr: Config.ListenAddress, Net: "udp"}
-	Config.io.Logger(INFO, "Started DNS on %s -- listening", server.Addr)
+	server := &dns.Server{Addr: Server.ListenAddress, Net: "udp"}
+	Server.io.Logger(INFO, "Started DNS on %s -- listening", server.Addr)
 	err := server.ListenAndServe()
 	if err != nil {
-		Config.io.Logger(FATAL, "%s", err)
+		Server.io.Logger(FATAL, "%s", err)
 	}
 	if err := server.Shutdown(); err != nil {
-		Config.io.Logger(WARN, "%s", err)
+		Server.io.Logger(WARN, "%s", err)
 	}
 
 }
@@ -437,35 +431,35 @@ func first(m map[string]agentStatusForServer) (out string) {
 
 // RunServer creates a new Server instance
 func RunServer(serverIo IO) {
-	Config.io = serverIo
+	Server.io = serverIo
 
 	// set global flag that we're running as server
 	var err error
-	Config.privateKey, err = cryptography.PrivateKeyFromString(Config.PrivateKeyBase36)
+	Server.privateKey, err = cryptography.PrivateKeyFromString(Server.PrivateKeyBase36)
 	if err != nil {
-		Config.io.Logger(FATAL, "%s", err)
+		Server.io.Logger(FATAL, "%s", err)
 	}
 
-	Config.io.Logger(INFO, "Use the following public key to connect clients: %s", Config.privateKey.GetPublicKey().String())
+	Server.io.Logger(INFO, "Use the following public key to connect clients: %s", Server.privateKey.GetPublicKey().String())
 
 	// todo: public keys
 
-	if !strings.HasSuffix(Config.DNSSuffix, ".") {
-		Config.DNSSuffix = Config.DNSSuffix + "."
+	if !strings.HasSuffix(Server.DNSSuffix, ".") {
+		Server.DNSSuffix = Server.DNSSuffix + "."
 	}
-	if !strings.HasPrefix(Config.DNSSuffix, ".") {
-		Config.DNSSuffix = "." + Config.DNSSuffix
+	if !strings.HasPrefix(Server.DNSSuffix, ".") {
+		Server.DNSSuffix = "." + Server.DNSSuffix
 	}
 
 	go runDNS()
 
 	go func() {
-		for text := range Config.io.GetInputFeed() {
+		for text := range Server.io.GetInputFeed() {
 			agent := first(connectedAgents) //todo: this will always send it to the first agent, needs to be configurable
 			// agent, _ := UiAgentList.GetItemText(UiAgentList.GetCurrentItem())
 			pubkey, err := cryptography.PublicKeyFromString(agent)
 			if err != nil {
-				Config.io.Logger(ERR, "can't find a key to send a message to: %s", err)
+				Server.io.Logger(ERR, "can't find a key to send a message to: %s", err)
 			} else if len(text) > 0 {
 				_ = sendMessageToAgent(pubkey, text)
 			}

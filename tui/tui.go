@@ -82,10 +82,10 @@ func main() {
 		AddDropDown("Mode", []string{"chat", "exec"}, 0, nil).
 		AddButton("Start Server", func() {
 			_, mode := uiConfig.GetFormItemByLabel("Mode").(*tview.DropDown).GetCurrentOption()
-			server.Config.Mode = mode
-			server.Config.ListenAddress = uiConfig.GetFormItemByLabel("Listen Address").(*tview.InputField).GetText()
-			server.Config.PrivateKeyBase36 = uiConfig.GetFormItemByLabel("Private Key").(*tview.InputField).GetText()
-			server.Config.DNSSuffix = uiConfig.GetFormItemByLabel("DNS Suffix").(*tview.InputField).GetText()
+			server.Server.Mode = mode
+			server.Server.ListenAddress = uiConfig.GetFormItemByLabel("Listen Address").(*tview.InputField).GetText()
+			server.Server.PrivateKeyBase36 = uiConfig.GetFormItemByLabel("Private Key").(*tview.InputField).GetText()
+			server.Server.DNSSuffix = uiConfig.GetFormItemByLabel("DNS Suffix").(*tview.InputField).GetText()
 			server.RunServer(io)
 			uiCmdInput.SetFocus(0)
 		})
