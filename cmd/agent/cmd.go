@@ -68,6 +68,8 @@ func main() {
 	io.out = make(chan string, 1)
 	go io.Handler()
 
+	agent := agent.Agent{}
+
 	var cmdAgent = &cobra.Command{
 		Use:   "agent [arguments]",
 		Short: "Start DNSpot in Agent mode",
@@ -80,19 +82,19 @@ func main() {
 				zerolog.SetGlobalLevel(zerolog.Level(5 - logLevel))
 			}
 			io.logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Logger()
-			agent.RunAgent(io)
+			agent.Run(io)
 		},
 	}
 
 	cmdAgent.Flags().Uint8("logLevel", 1, "log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 
-	cmdAgent.Flags().DurationVarP(&agent.Config.CommandTimeout, "timeout", "", 2*time.Second, "Timeout for command execution")
-	cmdAgent.Flags().StringVarP(&agent.Config.PrivateKeyBase36, "privateKey", "", "", "Private Key used. Generates one on the fly if empty")
-	cmdAgent.Flags().StringVarP(&agent.Config.ServerPublicKeyBase36, "serverPublicKey", "", "", "Server's public Key")
+	cmdAgent.Flags().DurationVarP(&agent.CommandTimeout, "timeout", "", 2*time.Second, "Timeout for command execution")
+	cmdAgent.Flags().StringVarP(&agent.PrivateKeyBase36, "privateKey", "", "", "Private Key used. Generates one on the fly if empty")
+	cmdAgent.Flags().StringVarP(&agent.ServerPublicKeyBase36, "serverPublicKey", "", "", "Server's public Key")
 	_ = cmdAgent.MarkFlagRequired("serverPublicKey")
-	cmdAgent.Flags().StringVarP(&agent.Config.DnsSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
+	cmdAgent.Flags().StringVarP(&agent.DnsSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
 	_ = cmdAgent.MarkFlagRequired("dnsSuffix")
-	cmdAgent.Flags().StringVarP(&agent.Config.ServerAddress, "serverAddress", "", "", "DNS Server to use. You can specify custom port here. Leave blank to use system's DNS server")
+	cmdAgent.Flags().StringVarP(&agent.ServerAddress, "serverAddress", "", "", "DNS Server to use. You can specify custom port here. Leave blank to use system's DNS server")
 
 	// helper function to spit out keys
 	var cmdGenerateKey = &cobra.Command{
