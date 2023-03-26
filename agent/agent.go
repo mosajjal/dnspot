@@ -271,7 +271,7 @@ func (a *Agent) Run(serverIo IO) {
 	}
 
 	// extract the public key from the provided Base32 encoded string
-	if a.serverPublicKey, err = cryptography.PublicKeyFromString(a.ServerPublicKeyBase36); err != nil {
+	if a.serverPublicKey, err = cryptography.PublicKeyFromString(cryptography.PublicKeyStr(a.ServerPublicKeyBase36)); err != nil {
 		a.io.Logger(FATAL, "failed to generate a key for client")
 	}
 
