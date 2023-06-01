@@ -222,21 +222,24 @@ func (s *Server) mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptog
 
 	parentPartID := ParentPartID(parentPartIDInt)
 
-	if targetBuffer, ok := s.outBuffer[agentPublicKey.String()][parentPartID]; ok {
-		if parentPartID == 0 {
-			// if there was a single packet living in the cache before, delete it before proceed
-			// todo: maybe this is the place for this but I think it's better to be cleaned up elsewhere
-			// delete(s.outBuffer[agentPublicKey.String()] , parentPartId)
-			s.outBuffer[agentPublicKey.String()] = make(map[ParentPartID][]string)
-			s.outBuffer[agentPublicKey.String()][parentPartID] = append(s.outBuffer[agentPublicKey.String()][parentPartID], Answers[0])
-		}
-		s.io.Logger(INFO, "key and ParentPartId already exist in the buffer, overwriting...")
+	// check to see if the parent key exists first in case an agent disappears
+	if _, ok := s.outBuffer[agentPublicKey.String()]; !ok {
+		if targetBuffer, ok := s.outBuffer[agentPublicKey.String()][parentPartID]; ok {
+			if parentPartID == 0 {
+				// if there was a single packet living in the cache before, delete it before proceed
+				// todo: maybe this is the place for this but I think it's better to be cleaned up elsewhere
+				// delete(s.outBuffer[agentPublicKey.String()] , parentPartId)
+				s.outBuffer[agentPublicKey.String()] = make(map[ParentPartID][]string)
+				s.outBuffer[agentPublicKey.String()][parentPartID] = append(s.outBuffer[agentPublicKey.String()][parentPartID], Answers[0])
+			}
+			s.io.Logger(INFO, "key and ParentPartId already exist in the buffer, overwriting...")
 
-	} else {
-		//initialize the map
-		s.outBuffer[agentPublicKey.String()] = make(map[ParentPartID][]string)
-		targetBuffer = append(targetBuffer, Answers...)
-		s.outBuffer[agentPublicKey.String()][parentPartID] = targetBuffer
+		} else {
+			//initialize the map
+			s.outBuffer[agentPublicKey.String()] = make(map[ParentPartID][]string)
+			targetBuffer = append(targetBuffer, Answers...)
+			s.outBuffer[agentPublicKey.String()][parentPartID] = targetBuffer
+		}
 	}
 	s.io.Logger(INFO, "command was successfully added to outgoing buffer to be sent")
 

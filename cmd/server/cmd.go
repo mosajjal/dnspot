@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/c-bata/go-prompt"
 	"github.com/manifoldco/promptui"
 	"github.com/mosajjal/dnspot/cryptography"
 	"github.com/mosajjal/dnspot/server"
@@ -33,6 +34,12 @@ func (io cmdIO) GetInputFeed() chan server.InMsg {
 func (io cmdIO) GetOutputFeed() chan string {
 	return io.out
 }
+func completer(d prompt.Document) []prompt.Suggest {
+	s := []prompt.Suggest{
+		{Text: "!quit", Description: "Quit the application"},
+	}
+	return prompt.FilterHasPrefix(s, d.Text, true)
+}
 
 func (io cmdIO) Handler() {
 
@@ -41,25 +48,14 @@ func (io cmdIO) Handler() {
 	go func() {
 		for {
 
-			p1 := promptui.Prompt{
-				Label: "Command/Message",
+			text := prompt.Input("> ", completer)
+			if text == "!quit" {
+				return
 			}
-			text, err := p1.Run()
-			if err != nil {
-				os.Exit(0)
-			}
-			// fmt.Print("-> ")
-			// text, err := reader.ReadString('\n')
-			// if err != nil {
-			// 	os.Exit(0)
-			// }
-			// // convert CRLF to LF
-			// text = strings.Replace(text, "\n", "", -1)
 
 			agents := Server.ListAgents()
 			if len(agents) == 0 {
-				p1.Label = "No agents connected. Waiting for agents to connect"
-				_, _ = p1.Run()
+				fmt.Println("No agents connected. Waiting for agents to connect")
 				continue
 			}
 			p2 := promptui.Select{
