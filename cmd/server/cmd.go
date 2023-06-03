@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -23,6 +24,7 @@ type cmdIO struct {
 	in     chan server.InMsg
 	out    chan string
 	logger zerolog.Logger
+	ctx    context.Context
 }
 
 func (io cmdIO) Logger(level uint8, format string, args ...interface{}) {
@@ -34,6 +36,10 @@ func (io cmdIO) GetInputFeed() chan server.InMsg {
 func (io cmdIO) GetOutputFeed() chan string {
 	return io.out
 }
+func (io cmdIO) GetContext() context.Context {
+	return io.ctx
+}
+
 func completer(d prompt.Document) []prompt.Suggest {
 	s := []prompt.Suggest{
 		{Text: "!quit", Description: "Quit the application"},
@@ -86,6 +92,7 @@ func main() {
 	var io cmdIO
 	io.in = make(chan server.InMsg, 1)
 	io.out = make(chan string, 1)
+	io.ctx = context.Background()
 	go io.Handler()
 
 	var cmdServer = &cobra.Command{
@@ -108,7 +115,11 @@ func main() {
 			} else {
 				io.logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Logger()
 			}
-			Server.RunServer(io)
+			go func() {
+				if err := Server.RunServer(io); err != nil {
+					log.Fatal().Msgf("error running server: %v", err)
+				}
+			}()
 		},
 	}
 	cmdServer.Flags().String("logFile", "", "Log to file. stderr is used when not provided. Optional")
@@ -132,7 +143,10 @@ func main() {
 		Args:  cobra.ExactArgs(0),
 		Run: func(cmd *cobra.Command, args []string) {
 			func() {
-				pub, priv := cryptography.GenerateKeypair()
+				pub, priv, err := cryptography.GenerateKeypair()
+				if err != nil {
+					log.Fatal().Msgf("error generating keypair: %v", err)
+				}
 				fmt.Printf("public key: %s\nprivate key: %s\n", pub, priv)
 			}()
 		},

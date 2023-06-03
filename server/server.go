@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -52,6 +53,7 @@ type IO interface {
 	Logger(level uint8, format string, args ...interface{})
 	GetInputFeed() chan InMsg
 	GetOutputFeed() chan string
+	GetContext() context.Context
 }
 
 type agentStatusForServer struct {
@@ -421,21 +423,20 @@ func (s *Server) handle53(w dns.ResponseWriter, r *dns.Msg) {
 	}
 }
 
-func (s *Server) runDNS() {
+func (s *Server) runDNS(ctx context.Context) error {
 
 	dns.HandleFunc(".", s.handle53)
 
 	// start server
 	server := &dns.Server{Addr: s.ListenAddress, Net: "udp"}
-	s.io.Logger(INFO, "Started DNS on %s -- listening", server.Addr)
-	err := server.ListenAndServe()
-	if err != nil {
-		s.io.Logger(FATAL, "%s", err)
-	}
-	if err := server.Shutdown(); err != nil {
-		s.io.Logger(WARN, "%s", err)
-	}
 
+	go func() {
+		<-ctx.Done()
+		server.Shutdown()
+	}()
+
+	s.io.Logger(INFO, "Started DNS on %s -- listening", server.Addr)
+	return server.ListenAndServe()
 }
 
 // returns the first item of an arbitrary map
@@ -448,20 +449,20 @@ func first(m map[cryptography.PublicKeyStr]agentStatusForServer) (out cryptograp
 	return
 }
 
-// RunServer creates a new Server instance
-func (s *Server) RunServer(serverIo IO) {
-	s.io = serverIo
+// RunServer creates a new Server instance. This function is blocking and follows the "ListenAndServe" model
+func (s *Server) RunServer(serverIO IO) error {
+	s.io = serverIO
 
 	// set global flag that we're running as server
 	var err error
 	s.privateKey, err = cryptography.PrivateKeyFromString(s.PrivateKeyBase36)
 	if err != nil {
-		s.io.Logger(FATAL, "%s", err)
+		return err
 	}
 
-	s.io.Logger(INFO, "Use the following public key to connect clients: %s", s.privateKey.GetPublicKey().String())
+	s.io.Logger(INFO, "Use the following public key to connect agents: %s", s.privateKey.GetPublicKey().String())
 
-	// todo: public keys
+	// TODO: enable allowing only a set of public keys to connect
 
 	if !strings.HasSuffix(s.DNSSuffix, ".") {
 		s.DNSSuffix = s.DNSSuffix + "."
@@ -470,18 +471,24 @@ func (s *Server) RunServer(serverIo IO) {
 		s.DNSSuffix = "." + s.DNSSuffix
 	}
 
-	go s.runDNS()
-
+	dnsErrChan := make(chan error)
 	go func() {
-		for text := range s.io.GetInputFeed() {
+		dnsErrChan <- s.runDNS(s.io.GetContext())
+	}()
+
+	for {
+		select {
+		case text := <-s.io.GetInputFeed():
 			if len(text.Prompt) > 0 {
 				agent, _ := cryptography.PublicKeyFromString(cryptography.PublicKeyStr(text.Agent))
 				_ = s.sendMessageToAgent(agent, text.Prompt)
 			}
+		case <-s.io.GetContext().Done():
+			s.io.Logger(INFO, "Context cancelled, shutting down")
+			return nil
+		case err := <-dnsErrChan:
+			return err
 		}
-	}()
-
-	// fmt.Println("here") //todo:remove
-	// select {}
+	}
 
 }
