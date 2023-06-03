@@ -104,7 +104,11 @@ func main() {
 		Args:  cobra.ExactArgs(0),
 		Run: func(cmd *cobra.Command, args []string) {
 			func() {
-				pub, priv := cryptography.GenerateKeypair()
+				pub, priv, err := cryptography.GenerateKeypair()
+				if err != nil {
+					fmt.Println(err)
+					os.Exit(1)
+				}
 				fmt.Printf("public key: %s\nprivate key: %s\n", pub, priv)
 			}()
 		},

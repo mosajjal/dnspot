@@ -151,13 +151,13 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		var b bytes.Buffer
 		gz, _ := gzip.NewWriterLevel(&b, gzip.BestCompression)
 		if _, err := gz.Write(payload); err != nil {
-			panic(err)
+			return nil, 0, err
 		}
 		if err := gz.Flush(); err != nil {
-			panic(err)
+			return nil, 0, err
 		}
 		if err := gz.Close(); err != nil {
-			panic(err)
+			return nil, 0, err
 		}
 		payload = b.Bytes()
 	}

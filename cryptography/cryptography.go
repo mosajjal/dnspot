@@ -185,17 +185,14 @@ func GenerateKey() (*PrivateKey, error) {
 }
 
 // GenerateKeypair generates a public and private keypair string
-func GenerateKeypair() (pub PublicKeyStr, priv PrivateKeyStr) {
+func GenerateKeypair() (PublicKeyStr, PrivateKeyStr, error) {
 
 	privateKey, err := GenerateKey()
 	if err != nil {
-
-		panic(err.Error())
+		return "", "", err
 	}
 	pubKey := privateKey.GetPublicKey()
-	pub = pubKey.String()
-	priv = privateKey.String()
-	return
+	return pubKey.String(), privateKey.String(), nil
 }
 
 // GetPublicKeyFromMessage is a helper function to extract first 32 bytes
