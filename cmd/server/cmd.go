@@ -53,10 +53,9 @@ func (io cmdIO) Handler() {
 	fmt.Println("Press Ctrl+D to exit")
 	go func() {
 		for {
-
-			text := prompt.Input("> ", completer)
+			text := prompt.Input(Server.Mode+"> ", completer)
 			if text == "!quit" {
-				return
+				os.Exit(0)
 			}
 
 			agents := Server.ListAgents()

