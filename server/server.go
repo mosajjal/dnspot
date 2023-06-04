@@ -241,9 +241,6 @@ func (s *Server) mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptog
 	parentPartID := ParentPartID(parentPartIDInt)
 	agent := s.connectedAgents[agentPublicKey.String()]
 
-	fmt.Printf("parentPartID: %d\n", parentPartID)
-	fmt.Printf("agent.OutBuffer: %#v\n", agent.OutBuffer) //TODO:remove
-
 	// check to see if the parent key exists first in case an agent disappears
 	if _, ok := agent.OutBuffer[parentPartID]; !ok {
 		if targetBuffer, ok := agent.OutBuffer[parentPartID]; ok {
