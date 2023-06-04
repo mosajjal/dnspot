@@ -16,11 +16,13 @@ type PublicKey struct {
 	elliptic.Curve
 	X, Y *big.Int
 }
+type PublicKeyStr string
 
 // PrivateKey is a bytestream of data not converted to anything
 type PrivateKey struct {
 	D []byte
 }
+type PrivateKeyStr string
 
 var algorithm = elliptic.P256()
 
@@ -123,13 +125,13 @@ func (private *PrivateKey) Decrypt(data []byte) (decrypted []byte, err error) {
 }
 
 // String marshaller for private key
-func (private PrivateKey) String() string {
-	return EncodeBytes(private.D)
+func (private PrivateKey) String() PrivateKeyStr {
+	return PrivateKeyStr(EncodeBytes(private.D))
 }
 
 // String marshaller for public key
-func (key PublicKey) String() string {
-	return EncodeBytes(elliptic.MarshalCompressed(key.Curve, key.X, key.Y))
+func (key PublicKey) String() PublicKeyStr {
+	return PublicKeyStr(EncodeBytes(elliptic.MarshalCompressed(key.Curve, key.X, key.Y)))
 }
 
 // GetPublicKey returns a PublicKey object from the key
@@ -143,8 +145,8 @@ func (private PrivateKey) GetPublicKey() PublicKey {
 }
 
 // PublicKeyFromString grabs a public key string and gives out a publickey object
-func PublicKeyFromString(public string) (*PublicKey, error) {
-	publicKey := DecodeToBytes(public)
+func PublicKeyFromString(public PublicKeyStr) (*PublicKey, error) {
+	publicKey := DecodeToBytes(string(public))
 
 	// if err != nil {
 	// 	return nil, err
@@ -183,17 +185,14 @@ func GenerateKey() (*PrivateKey, error) {
 }
 
 // GenerateKeypair generates a public and private keypair string
-func GenerateKeypair() (pub string, priv string) {
+func GenerateKeypair() (PublicKeyStr, PrivateKeyStr, error) {
 
 	privateKey, err := GenerateKey()
 	if err != nil {
-
-		panic(err.Error())
+		return "", "", err
 	}
 	pubKey := privateKey.GetPublicKey()
-	pub = pubKey.String()
-	priv = privateKey.String()
-	return
+	return pubKey.String(), privateKey.String(), nil
 }
 
 // GetPublicKeyFromMessage is a helper function to extract first 32 bytes

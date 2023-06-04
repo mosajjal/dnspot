@@ -2,8 +2,9 @@ name: Build Test
 
 on:
   push:
-    tags:
-      - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
 
@@ -15,14 +16,14 @@ jobs:
     - name: Set up Go 1.x
       uses: actions/setup-go@v2
       with:
-        go-version: ^1.17
+        go-version: ^1.20
 
     - name: Check out code into the Go module directory
       uses: actions/checkout@v2
 
     - name: Get dependencies
-      run:  go get -v 
-      working-directory: "."
+      run:  go get -v
+      working-directory: "./..."
 
     - name: Build linux x64
       run: go build -v -o /tmp/dnspot-linux-amd64.bin .
@@ -32,12 +33,3 @@ jobs:
         GOOS: linux
         GOARCH: amd64
 
-    - name: Upload Linux binary to release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: /tmp/dnspot-linux-amd64.bin
-        asset_name: dnspot-linux-amd64.bin
-        tag: ${{ github.ref }}
-        overwrite: true
-        body: ""

