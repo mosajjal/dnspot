@@ -50,7 +50,7 @@ func completer(d prompt.Document) []prompt.Suggest {
 func (io cmdIO) Handler() {
 
 	// reader := bufio.NewReader(os.Stdin)
-	fmt.Println("Press Ctrl+D to exit")
+	fmt.Println("!quit to exit")
 	go func() {
 		for {
 			text := prompt.Input(Server.Mode+"> ", completer)
