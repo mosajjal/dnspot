@@ -28,6 +28,8 @@ jobs:
         project_path: "./cmd/server"
         build_flags: -v
 
+    - uses: AutoModality/action-clean@v1
+    - uses: actions/checkout@v3
     - uses: wangyoucao577/go-release-action@master
       env:
         CGO_ENABLED: 0 # support alpine
@@ -42,6 +44,8 @@ jobs:
         project_path: "./cmd/client"
         build_flags: -v
 
+    - uses: AutoModality/action-clean@v1
+    - uses: actions/checkout@v3
     - uses: wangyoucao577/go-release-action@master
       env:
         CGO_ENABLED: 0 # support alpine
