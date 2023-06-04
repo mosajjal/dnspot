@@ -24,7 +24,7 @@ jobs:
         goversion: 1.20.4
         ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }} -X main.commit=${{ github.sha }}"
         # executable_compression: "upx --lzma" # upx is not supported for anything other that linux
-        asset_name: "dnspot-${BINARY_NAME}-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+        asset_name: dnspot-server-cli-${{ matrix.goos }}-${{ matrix.goarch }}
         project_path: "./cmd/server"
         build_flags: -v
 
@@ -39,7 +39,7 @@ jobs:
         goversion: 1.20.4
         ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }} -X main.commit=${{ github.sha }}"
         # executable_compression: "upx --lzma" # upx is not supported for anything other that linux
-        asset_name: "dnspot-${BINARY_NAME}-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+        asset_name: dnspot-client-cli-${{ matrix.goos }}-${{ matrix.goarch }}
         project_path: "./cmd/client"
         build_flags: -v
 
@@ -54,7 +54,7 @@ jobs:
         goversion: 1.20.4
         ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }} -X main.commit=${{ github.sha }}"
         # executable_compression: "upx --lzma" # upx is not supported for anything other that linux
-        asset_name: "dnspot-server-${BINARY_NAME}-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+        asset_name: dnspot-server-tui-${{ matrix.goos }}-${{ matrix.goarch }}
         project_path: "./tui"
         build_flags: -v
 
