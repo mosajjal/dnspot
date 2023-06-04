@@ -57,11 +57,14 @@ const (
 // if ParentPartID != 0 -> incoming packets in the order of their PartID
 // if IsLastPart == true -> last packet
 
+// PartID is the ID of each part of a multipart message. ParentPartID is also of this type
+type PartID uint16
+
 // MessagePacket is the payload that will be on the wire for each DNS query and response
 type MessagePacket struct {
 	TimeStamp     uint32  `struc:"uint32,little"`
-	PartID        uint16  `struc:"uint16,little"`
-	ParentPartID  uint16  `struc:"uint16,little"`
+	PartID        PartID  `struc:"uint16,little"`
+	ParentPartID  PartID  `struc:"uint16,little"`
 	IsLastPart    bool    `struc:"bool,little"`
 	MessageType   MsgType `struc:"uint8,little"`
 	Command       CmdType `struc:"uint8,little"`
@@ -143,7 +146,7 @@ func split(buf []byte, lim int) [][]byte {
 
 // PreparePartitionedPayload Gets a big payload that needs to be sent over the wire, chops it up into smaller limbs and creates a list of messages to be sent. It also sends the parentPartID to make sure the series
 // of messages are not lost
-func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, uint16, error) {
+func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, PartID, error) {
 	// TODO: fix duplicate sending
 
 	// handle compression
@@ -164,14 +167,14 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 
 	var err error
 	var response []string
-	var parentPartID uint16 = 0
+	var parentPartID PartID = 0
 	// retryCount := 1 //todo: retry of >1 could cause message duplicates
 	limbs := split(payload, int(ChunkSize))
 	if len(limbs) > 1 {
 		msg.IsLastPart = false
 		msg.PartID = 0
 		rand.Seed(time.Now().UnixNano())
-		msg.ParentPartID = uint16(rand.Uint32()) + 1
+		msg.ParentPartID = PartID(uint16(rand.Uint32()) + 1)
 		parentPartID = msg.ParentPartID
 	}
 	//todo: maybe a cap on the number of limbs here, as well as some progress logging inside the loop?
