@@ -21,12 +21,14 @@ Can't see why it wouldn't run on Mac, Rpi, etc since the libraries are not `CGO`
 
 ```go
 type MessagePacket struct {
-	Payload      [PAYLOAD_SIZE]byte 
-	TimeStamp    uint32             
-	PartID       uint16            
-	ParentPartID uint16          
-	MessageType  MessageType
-	IsLastPart   bool     
+	TimeStamp     uint32
+	PartID        PartID
+	ParentPartID  PartID
+	IsLastPart    bool
+	MessageType   MsgType
+	Command       CmdType
+	PayloadLength uint8
+	Payload       []byte
 }
 ```
 
@@ -56,24 +58,39 @@ A myns.example.com  1.1.1.1
 NS c2.example.com   myns.example.com
 ```
 
-## Generate Keys
+## Download the binaries
+
+from the releases page, you have some options to download the binary. For the agent, there's `dnspot-agent-cli-*` and for the server, there are `dnspot-server-tui-*` and `dnspot-server-cli-*`.
+Download the appropiate version for your OS (Linux and FreeBSD supported), and place the server binary where the NS record is pointing at. 
+
+Now, we can start configuring the server. 
+
+### Server
+
+#### Generate Keys
 This part should be easy. Run the following:
 
 ``` bash
-$ dnspot generate
+$ dnspot-server-cli generate
 public  key: eg0he2d9cr3hpvt3z76trvkl7n2bivgscpwd5xfgn0oqgqlq00
 private key: 5slcifus86ojqs51ubctih0p35izi3x6ynyo2q2pnqs7syvnqa
 ```
 
-you need to run this once for the server, and once for each agent you're planning to run.
+You need to run this once for the server, and once for each agent you're planning to run.
 
-## Run the Server
+#### Run the Server
 
 For running the server, you must provide a suffix and a privatekey. Everything else is optional. Keep in mind that if you don't use the `enforceClientKeys` option, anyone that has your server's public key, can register themselves as an agent. If you're using `enforceClientKeys`, `acceptedClientKeys` becomes mandatory. You can also provide a `logFile` address to save the output persistently. Otherwise it's all gone when you press "Ctrl+C".
 
 ```
 Usage:
-  dnspot server [arguments] [flags]
+  server [arguments] [flags]
+  server [command]
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  generate    generate a pair of keys randomly
+  help        Help about any command
 
 Flags:
       --acceptedClientKeys strings   Accepted Client Keys
@@ -81,27 +98,47 @@ Flags:
       --enforceClientKeys            Enforce client keys. Need to provide a list of accepted public keys if set to true
   -h, --help                         help for server
       --listenAddress string         Listen Socket (default "0.0.0.0:53")
-      --logFile string               Log output file. Optional
+      --logFile string               Log to file. stderr is used when not provided. Optional
       --logLevel uint8               Log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6 (default 1)
+      --mode string                  Run mode. choices: exec, chat (default "exec")
+      --outFile string               Output File to record only the commands and their responses
       --privateKey string            Private Key used
-
 ```
 
+
 ## Run the Agent(s)
-To run each agent, you must provide a suffix, a privatekey and also the server's public key. By default, the agent reads `/etc/resolve.conf`, and will leverage the first DNS server and its DNS server address, but you can provide another `serverAddress` in the socket format: `1.1.1.1:53`. DoT, DoH and DoQ are not (yet) supported. 
+To run each agent, you must provide a suffix, and the server's public key. By default, the agent reads `/etc/resolve.conf`, and will leverage the first DNS server and its DNS server address, but you can provide another `serverAddress` in the socket format: `1.1.1.1:53`. DoT, DoH and DoQ are not (yet) supported. 
 
 ```
 Usage:
-  dnspot agent [arguments] [flags]
+  agent [arguments] [flags]
+  agent [command]
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  generate    generate a pair of keys randomly
+  help        Help about any command
 
 Flags:
       --dnsSuffix string         Subdomain that serves the domain, please note the dot at the beginning and the end (default ".example.com.")
   -h, --help                     help for agent
-      --loglevel uint8           log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6 (default 1)
-      --privateKey string        Private Key used
+      --logLevel uint8           log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6 (default 1)
+      --privateKey string        Private Key used. Generates one on the fly if empty
       --serverAddress string     DNS Server to use. You can specify custom port here. Leave blank to use system's DNS server
       --serverPublicKey string   Server's public Key
+      --timeout duration         Timeout for command execution (default 2s)``
 ```
+
+
+at this stage, the agent should be able to beacon to the server, and will await commands. back at the server, you have a prompt to issue commands on an agent. After typing out the command
+you will be presented with a popup menu to pick an agent to run the command on. let's look at some screenshots. Top is the server, bottom is the agent connecting to it
+
+configuration before executing the server and the agent
+![CLI 1](static/c2-1.png)
+issue a command from the server and choose the agent to run it on
+![CLI 2](static/c2-2.png)
+the response from the agent is shown in the server's CLI
+![CLI 3](static/c2-3.png)
 
 ## Profit
 The agent should instantly show up in Server's TUI, identified by its public key. You can then select an agent from the left panel (by clicking on it), and type the desired command and wait for the output to show up.
@@ -119,10 +156,10 @@ There's also a plan to implement file transfer both from server to agent and vic
 
 - [ ] File transfer
 - [ ] better configuration
-- [ ] TUI improvements and different command options
-- [ ] Agent watchdog to reset agent on failure or error rather than crash and die
-- [ ] DoT and DoH support
-- [ ] Decouple framework and UI to make it usable outside the project
+- [x] TUI improvements and different command options
+- [x] Agent watchdog to reset agent on failure or error rather than crash and die
+- [x] DoT and DoH support
+- [x] Decouple framework and UI to make it usable outside the project
 - [ ] Standard API and documentation
 - [ ] Possible Web UI for server
 - [ ] Alternative Query and response types (TXT, ANY, etc)
