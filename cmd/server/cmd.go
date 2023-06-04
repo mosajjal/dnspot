@@ -5,15 +5,14 @@
 package main
 
 import (
-	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
-	"time"
 
-	"github.com/mosajjal/dnspot/agent"
+	"github.com/c-bata/go-prompt"
+	"github.com/manifoldco/promptui"
 	"github.com/mosajjal/dnspot/cryptography"
 	"github.com/mosajjal/dnspot/server"
 	"github.com/rs/zerolog"
@@ -22,36 +21,57 @@ import (
 )
 
 type cmdIO struct {
-	in     chan string
+	in     chan server.InMsg
 	out    chan string
 	logger zerolog.Logger
+	ctx    context.Context
 }
 
 func (io cmdIO) Logger(level uint8, format string, args ...interface{}) {
 	io.logger.WithLevel(zerolog.Level(level)).Msgf(format, args...)
 }
-func (io cmdIO) GetInputFeed() chan string {
+func (io cmdIO) GetInputFeed() chan server.InMsg {
 	return io.in
 }
 func (io cmdIO) GetOutputFeed() chan string {
 	return io.out
 }
+func (io cmdIO) GetContext() context.Context {
+	return io.ctx
+}
+
+func completer(d prompt.Document) []prompt.Suggest {
+	s := []prompt.Suggest{
+		{Text: "!quit", Description: "Quit the application"},
+	}
+	return prompt.FilterHasPrefix(s, d.Text, true)
+}
 
 func (io cmdIO) Handler() {
 
-	reader := bufio.NewReader(os.Stdin)
+	// reader := bufio.NewReader(os.Stdin)
 	fmt.Println("Press Ctrl+D to exit")
 	go func() {
 		for {
-			fmt.Print("-> ")
-			text, err := reader.ReadString('\n')
-			if err != nil {
+			text := prompt.Input(Server.Mode+"> ", completer)
+			if text == "!quit" {
 				os.Exit(0)
 			}
-			// convert CRLF to LF
-			text = strings.Replace(text, "\n", "", -1)
+
+			agents := Server.ListAgents()
+			if len(agents) == 0 {
+				fmt.Println("No agents connected. Waiting for agents to connect")
+				continue
+			}
+			p2 := promptui.Select{
+				Label: "Agent",
+				Items: agents,
+			}
+
+			_, agent, _ := p2.Run()
+			// TODO: do this
 			if len(text) > 0 {
-				io.in <- text
+				io.in <- server.InMsg{Agent: agent, Prompt: text}
 			}
 		}
 	}()
@@ -63,11 +83,15 @@ func (io cmdIO) Handler() {
 	}
 }
 
+var Server server.Server
+
 func main() {
+	Server = server.New()
 
 	var io cmdIO
-	io.in = make(chan string, 1)
+	io.in = make(chan server.InMsg, 1)
 	io.out = make(chan string, 1)
+	io.ctx = context.Background()
 	go io.Handler()
 
 	var cmdServer = &cobra.Command{
@@ -90,47 +114,25 @@ func main() {
 			} else {
 				io.logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Logger()
 			}
-			server.RunServer(io)
+			go func() {
+				if err := Server.RunServer(io); err != nil {
+					log.Fatal().Msgf("error running server: %v", err)
+				}
+			}()
 		},
 	}
 	cmdServer.Flags().String("logFile", "", "Log to file. stderr is used when not provided. Optional")
 	cmdServer.Flags().String("outFile", "", "Output File to record only the commands and their responses")
 	cmdServer.Flags().Uint8("logLevel", 1, "Log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
 
-	cmdServer.Flags().StringVarP(&server.Config.PrivateKeyBase36, "privateKey", "", "", "Private Key used")
+	cmdServer.Flags().StringVarP(&Server.PrivateKeyBase36, "privateKey", "", "", "Private Key used")
 	_ = cmdServer.MarkFlagRequired("privateKey")
-	cmdServer.Flags().StringVarP(&server.Config.ListenAddress, "listenAddress", "", "0.0.0.0:53", "Listen Socket")
-	cmdServer.Flags().BoolVarP(&server.Config.EnforceClientKeys, "enforceClientKeys", "", false, "Enforce client keys. Need to provide a list of accepted public keys if set to true")
-	cmdServer.Flags().StringSliceVarP(&server.Config.AcceptedClientKeysBase36, "acceptedClientKeys", "", []string{}, "Accepted Client Keys")
-	cmdServer.Flags().StringVarP(&server.Config.DNSSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
+	cmdServer.Flags().StringVarP(&Server.ListenAddress, "listenAddress", "", "0.0.0.0:53", "Listen Socket")
+	cmdServer.Flags().BoolVarP(&Server.EnforceClientKeys, "enforceClientKeys", "", false, "Enforce client keys. Need to provide a list of accepted public keys if set to true")
+	cmdServer.Flags().StringSliceVarP(&Server.AcceptedClientKeysBase36, "acceptedClientKeys", "", []string{}, "Accepted Client Keys")
+	cmdServer.Flags().StringVarP(&Server.DNSSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
 	_ = cmdServer.MarkFlagRequired("dnsSuffix")
-	cmdServer.Flags().StringVarP(&server.Config.Mode, "mode", "", "exec", "Run mode. choices: exec, chat")
-
-	var cmdAgent = &cobra.Command{
-		Use:   "agent [arguments]",
-		Short: "Start DNSpot in Agent mode",
-		Long: `Agent mode attempts to send DNS packets to a specified domain
-		It authenticates the response using the public key of the server,
-		and based on the received data, it will potentially take actions`,
-		Args: cobra.ExactArgs(0),
-		Run: func(cmd *cobra.Command, args []string) {
-			if logLevel, err := cmd.Flags().GetUint8("logLevel"); err == nil {
-				zerolog.SetGlobalLevel(zerolog.Level(5 - logLevel))
-			}
-			io.logger = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Logger()
-			agent.RunAgent(io)
-		},
-	}
-
-	cmdAgent.Flags().Uint8("logLevel", 1, "log level. Panic:0, Fatal:1, Error:2, Warn:3, Info:4, Debug:5, Trace:6")
-
-	cmdAgent.Flags().DurationVarP(&agent.Config.CommandTimeout, "timeout", "", 2*time.Second, "Timeout for command execution")
-	cmdAgent.Flags().StringVarP(&agent.Config.PrivateKeyBase36, "privateKey", "", "", "Private Key used. Generates one on the fly if empty")
-	cmdAgent.Flags().StringVarP(&agent.Config.ServerPublicKeyBase36, "serverPublicKey", "", "", "Server's public Key")
-	_ = cmdAgent.MarkFlagRequired("serverPublicKey")
-	cmdAgent.Flags().StringVarP(&agent.Config.DnsSuffix, "dnsSuffix", "", ".example.com.", "Subdomain that serves the domain, please note the dot at the beginning and the end")
-	_ = cmdAgent.MarkFlagRequired("dnsSuffix")
-	cmdAgent.Flags().StringVarP(&agent.Config.ServerAddress, "serverAddress", "", "", "DNS Server to use. You can specify custom port here. Leave blank to use system's DNS server")
+	cmdServer.Flags().StringVarP(&Server.Mode, "mode", "", "exec", "Run mode. choices: exec, chat")
 
 	// helper function to spit out keys
 	var cmdGenerateKey = &cobra.Command{
@@ -140,15 +142,28 @@ func main() {
 		Args:  cobra.ExactArgs(0),
 		Run: func(cmd *cobra.Command, args []string) {
 			func() {
-				pub, priv := cryptography.GenerateKeypair()
+				pub, priv, err := cryptography.GenerateKeypair()
+				if err != nil {
+					log.Fatal().Msgf("error generating keypair: %v", err)
+				}
 				fmt.Printf("public key: %s\nprivate key: %s\n", pub, priv)
 			}()
 		},
 	}
 
-	var rootCmd = &cobra.Command{Use: "dnspot"}
-	rootCmd.AddCommand(cmdServer, cmdAgent, cmdGenerateKey)
-	_ = rootCmd.Execute()
+	// var rootCmd = &cobra.Command{Use: "dnspot"}
+	// rootCmd.AddCommand(cmdServer, cmdGenerateKey)
+	// _ = rootCmd.Execute()
+
+	cmdServer.AddCommand(cmdGenerateKey)
+	if err := cmdServer.Execute(); err != nil {
+		os.Exit(1)
+	} else {
+		// Exit if help was called
+		if cmdServer.Flags().Changed("help") {
+			os.Exit(0)
+		}
+	}
 
 	// handle interrupts
 	signalChannel := make(chan os.Signal, 2)

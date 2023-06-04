@@ -1,0 +1,60 @@
+name: Publish binaries on Release
+on:
+  release:
+    types: [created]
+
+jobs:
+  releases-matrix:
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # build and publish in parallel: linux/386, linux/amd64, windows/386, windows/amd64, darwin/386, darwin/amd64 
+        goos: [linux, openbsd, freebsd]
+        goarch: ["386", amd64, arm64, arm]
+    steps:
+    - uses: actions/checkout@v3
+    - uses: wangyoucao577/go-release-action@master
+      env:
+        CGO_ENABLED: 0 # support alpine
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        goos: ${{ matrix.goos }}
+        goarch: ${{ matrix.goarch }}
+        goversion: 1.20.4
+        ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }} -X main.commit=${{ github.sha }}"
+        executable_compression: "upx --lzma"
+        asset_name: "dnspot-${BINARY_NAME}-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+        project_path: "./cmd/server"
+        build_flags: -v
+
+    - uses: actions/checkout@v3
+    - uses: wangyoucao577/go-release-action@master
+      env:
+        CGO_ENABLED: 0 # support alpine
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        goos: ${{ matrix.goos }}
+        goarch: ${{ matrix.goarch }}
+        goversion: 1.20.4
+        ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }} -X main.commit=${{ github.sha }}"
+        executable_compression: "upx --lzma"
+        asset_name: "dnspot-${BINARY_NAME}-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+        project_path: "./cmd/client"
+        build_flags: -v
+
+    - uses: actions/checkout@v3
+    - uses: wangyoucao577/go-release-action@master
+      env:
+        CGO_ENABLED: 0 # support alpine
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        goos: ${{ matrix.goos }}
+        goarch: ${{ matrix.goarch }}
+        goversion: 1.20.4
+        ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }} -X main.commit=${{ github.sha }}"
+        executable_compression: "upx --lzma"
+        asset_name: "dnspot-server-${BINARY_NAME}-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+        project_path: "./tui"
+        build_flags: -v
+
