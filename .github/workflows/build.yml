@@ -25,9 +25,25 @@ jobs:
       run:  go get -v "./..."
       working-directory: "."
 
+    - name: Build agent cli
+      run: go build -v -o /tmp/dnspot-linux-amd64.bin .
+      working-directory: "./cmd/agent"
+      env:
+        CGO_ENABLED: 0
+        GOOS: linux
+        GOARCH: amd64
+
     - name: Build linux x64
       run: go build -v -o /tmp/dnspot-linux-amd64.bin .
-      working-directory: "./"
+      working-directory: "./cmd/server"
+      env:
+        CGO_ENABLED: 0
+        GOOS: linux
+        GOARCH: amd64
+
+    - name: Build linux x64
+      run: go build -v -o /tmp/dnspot-linux-amd64.bin .
+      working-directory: "./tui"
       env:
         CGO_ENABLED: 0
         GOOS: linux
