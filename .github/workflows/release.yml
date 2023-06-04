@@ -40,8 +40,8 @@ jobs:
         goversion: 1.20.4
         ldflags: "-s -w -X main.version=${{ github.event.release.tag_name }} -X main.commit=${{ github.sha }}"
         # executable_compression: "upx --lzma" # upx is not supported for anything other that linux
-        asset_name: dnspot-client-cli-${{ matrix.goos }}-${{ matrix.goarch }}
-        project_path: "./cmd/client"
+        asset_name: dnspot-agent-cli-${{ matrix.goos }}-${{ matrix.goarch }}
+        project_path: "./cmd/agent"
         build_flags: -v
 
     - uses: AutoModality/action-clean@v1
