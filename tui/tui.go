@@ -42,10 +42,9 @@ func (io tuiIO) GetContext() context.Context {
 
 // var CmdAndAgent chan CommandFromUi
 
-func uiUpdater(s server.Server, root *tview.Application, agentList *tview.List) {
+func uiUpdater(s *server.Server, root *tview.Application, agentList *tview.List) {
 	timeticker := time.NewTicker(1 * time.Second)
 	idleAgentRemovalTicker := time.NewTicker(60 * time.Second)
-	// runCmdTicker := time.NewTicker(30 * time.Second)
 	for {
 		select {
 		case <-timeticker.C:
@@ -58,7 +57,7 @@ func uiUpdater(s server.Server, root *tview.Application, agentList *tview.List) 
 			}
 
 		case <-idleAgentRemovalTicker.C:
-			// RemoveIdleAgents()
+			// RemoveIdleAgents() - handled by server now
 		}
 	}
 }

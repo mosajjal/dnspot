@@ -83,7 +83,7 @@ func (io cmdIO) Handler() {
 	}
 }
 
-var Server server.Server
+var Server *server.Server
 
 func main() {
 	Server = server.New()

@@ -1,11 +1,8 @@
-// package cmd provides a command-line interface for dnspot
-// this allows the application logic and the user interaction
-// to be decoupled, which provides a consice API for further
-// development of dnspot
 package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -23,6 +20,7 @@ type cmdIO struct {
 	in     chan string
 	out    chan string
 	logger zerolog.Logger
+	ctx    context.Context
 }
 
 func (io cmdIO) Logger(level uint8, format string, args ...interface{}) {
@@ -33,6 +31,9 @@ func (io cmdIO) GetInputFeed() chan string {
 }
 func (io cmdIO) GetOutputFeed() chan string {
 	return io.out
+}
+func (io cmdIO) GetContext() context.Context {
+	return io.ctx
 }
 
 func (io cmdIO) Handler() {
@@ -66,6 +67,7 @@ func main() {
 	var io cmdIO
 	io.in = make(chan string, 1)
 	io.out = make(chan string, 1)
+	io.ctx = context.Background()
 	go io.Handler()
 
 	agent := agent.Agent{}

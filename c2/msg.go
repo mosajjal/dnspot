@@ -15,14 +15,7 @@ import (
 	"github.com/mosajjal/dnspot/cryptography"
 )
 
-const (
-	// PayloadSize is the maximum number of bytes that can be fit inside a C2 Msg object. it will have the added headers before being sent on wire
-	PayloadSize = int(70)
-	// ChunkSize determines how much data each DNS query or response has. after converting the msg of ChunkSize to base32, it shouldn't exceed ~250 bytes
-	ChunkSize = uint8(90)
-	// CompressionThreshold sets the minimum msg size to be compressed. anything lower than this size will be sent uncompressed
-	CompressionThreshold = 1024 * 2 // 2KB
-)
+
 
 // MsgType defines the type of each message (healtcheck, synctime, execute command etc)
 // This is different from CmdType
@@ -79,27 +72,71 @@ type MessagePacketWithSignature struct {
 }
 
 // since the comms channel for DNS is out of our hands, we need to implement a dedup method for any bytestream
-type dedup map[uint64]struct{}
+type dedup struct {
+	table map[uint64]time.Time
+	maxSize int
+}
+
+// newDedup creates a new dedup instance with size limit
+func newDedup(maxSize int) *dedup {
+	return &dedup{
+		table: make(map[uint64]time.Time),
+		maxSize: maxSize,
+	}
+}
 
 // Add function gets a byte array and adds it to the dedup table. returns true if the key is new, false if it already exists
 func (d *dedup) Add(keyBytes []byte) bool {
 	//calculate FNV1A
 	key := FNV1A(keyBytes)
-	if _, ok := (*d)[key]; ok {
+	
+	// Check if key already exists
+	if _, ok := d.table[key]; ok {
 		return false
 	}
-	(*d)[key] = struct{}{}
+	
+	// If table is at max size, remove oldest entry
+	if len(d.table) >= d.maxSize {
+		d.cleanup()
+	}
+	
+	d.table[key] = time.Now()
 	return true
 }
 
+// cleanup removes entries older than 5 minutes to prevent unbounded growth
+func (d *dedup) cleanup() {
+	now := time.Now()
+	cutoff := now.Add(-5 * time.Minute)
+	
+	for key, timestamp := range d.table {
+		if timestamp.Before(cutoff) {
+			delete(d.table, key)
+		}
+	}
+	
+	// If still at capacity after cleanup, remove oldest 10%
+	if len(d.table) >= d.maxSize {
+		// Simple approach: clear 10% randomly
+		count := d.maxSize / 10
+		for key := range d.table {
+			if count <= 0 {
+				break
+			}
+			delete(d.table, key)
+			count--
+		}
+	}
+}
+
 // DedupHashTable is an empty map with the hash of the payload as key.
-var DedupHashTable dedup = make(map[uint64]struct{})
+var DedupHashTable = newDedup(DedupTableMaxSize)
 
 // PerformExternalAQuery is a very basic A query provider. TODO: this needs to move to github.com/mosajjal/dnsclient
 func PerformExternalAQuery(Q string, server string) (*dns.Msg, error) {
 	question := dns.Question{Name: Q, Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	c := new(dns.Client)
-	c.Timeout = 6 * time.Second //todo: make this part of config
+	c.Timeout = DNSQueryTimeout
 	m1 := new(dns.Msg)
 	m1.SetEdns0(1500, false)
 	m1.Id = dns.Id()
@@ -147,20 +184,33 @@ func split(buf []byte, lim int) [][]byte {
 // PreparePartitionedPayload Gets a big payload that needs to be sent over the wire, chops it up into smaller limbs and creates a list of messages to be sent. It also sends the parentPartID to make sure the series
 // of messages are not lost
 func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix string, privateKey *cryptography.PrivateKey, serverPublicKey *cryptography.PublicKey) ([]string, PartID, error) {
-	// TODO: fix duplicate sending
+	if privateKey == nil {
+		return nil, 0, errors.New("private key cannot be nil")
+	}
+	if serverPublicKey == nil {
+		return nil, 0, errors.New("server public key cannot be nil")
+	}
+	if dnsSuffix == "" {
+		return nil, 0, errors.New("DNS suffix cannot be empty")
+	}
 
 	// handle compression
 	if len(payload) > CompressionThreshold {
 		var b bytes.Buffer
-		gz, _ := gzip.NewWriterLevel(&b, gzip.BestCompression)
+		gz, err := gzip.NewWriterLevel(&b, gzip.BestCompression)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to create gzip writer: %w", err)
+		}
 		if _, err := gz.Write(payload); err != nil {
-			return nil, 0, err
+			gz.Close()
+			return nil, 0, fmt.Errorf("failed to write compressed data: %w", err)
 		}
 		if err := gz.Flush(); err != nil {
-			return nil, 0, err
+			gz.Close()
+			return nil, 0, fmt.Errorf("failed to flush compressed data: %w", err)
 		}
 		if err := gz.Close(); err != nil {
-			return nil, 0, err
+			return nil, 0, fmt.Errorf("failed to close gzip writer: %w", err)
 		}
 		payload = b.Bytes()
 	}
@@ -168,8 +218,13 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 	var err error
 	var response []string
 	var parentPartID PartID = 0
-	// retryCount := 1 //todo: retry of >1 could cause message duplicates
 	limbs := split(payload, int(ChunkSize))
+	
+	// Check if we exceed maximum multipart packets
+	if len(limbs) > MaxMultipartPackets {
+		return nil, 0, fmt.Errorf("payload too large: %d packets exceeds maximum of %d", len(limbs), MaxMultipartPackets)
+	}
+	
 	if len(limbs) > 1 {
 		msg.IsLastPart = false
 		msg.PartID = 0
@@ -177,32 +232,33 @@ func PreparePartitionedPayload(msg MessagePacket, payload []byte, dnsSuffix stri
 		msg.ParentPartID = PartID(uint16(rand.Uint32()) + 1)
 		parentPartID = msg.ParentPartID
 	}
-	//todo: maybe a cap on the number of limbs here, as well as some progress logging inside the loop?
+	
 	for i := 0; i < len(limbs); i++ {
-		// if retryCount == 0 {
-		// 	return response, parentPartID, errors.New("failed to send message after 10 attempts")
-		// }
 		if i == len(limbs)-1 && len(limbs) > 1 {
 			msg.IsLastPart = true
 		}
-		// msg.Payload = []byte{}
-		// msg.PayloadLength = uint8(copy(msg.Payload[:], limbs[i]))
 		msg.Payload = limbs[i]
 		msg.PayloadLength = uint8(len(limbs[i]))
 		var buf bytes.Buffer
 		buf.Reset()
 		if err := struc.Pack(&buf, &msg); err != nil {
-			return response, parentPartID, err
+			return response, parentPartID, fmt.Errorf("failed to pack message: %w", err)
 		}
 		encrypted, err := privateKey.Encrypt(serverPublicKey, buf.Bytes())
 		if err != nil {
-			return response, parentPartID, err
+			return response, parentPartID, fmt.Errorf("failed to encrypt message: %w", err)
 		}
 
 		s := cryptography.EncodeBytes(encrypted)
-
 		fqdn := insertNth(s, 60)
-		response = append(response, fqdn+dnsSuffix)
+		
+		// Validate DNS name length
+		fullName := fqdn + dnsSuffix
+		if len(fullName) > MaxDNSNameLength {
+			return nil, 0, fmt.Errorf("DNS name too long: %d exceeds maximum of %d", len(fullName), MaxDNSNameLength)
+		}
+		
+		response = append(response, fullName)
 		msg.PartID++
 	}
 
@@ -295,6 +351,11 @@ func DecryptIncomingPacket(m *dns.Msg, suffix string, privatekey *cryptography.P
 // and returns another packet list that are sorted, deduplicated and are complete
 func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacketWithSignature {
 	//sort, uniq and remove duplicates. then check if the message is complete
+	
+	// Handle empty packet list
+	if len(packets) == 0 {
+		return nil
+	}
 
 	//sort
 	sort.Slice(packets, func(i, j int) bool {
@@ -308,8 +369,9 @@ func CheckMessageIntegrity(packets []MessagePacketWithSignature) []MessagePacket
 			i--
 		}
 	}
+	
 	// check if the message is complete
-	if len(packets) == int(packets[len(packets)-1].Msg.PartID)+1 {
+	if len(packets) > 0 && len(packets) == int(packets[len(packets)-1].Msg.PartID)+1 {
 		return packets
 	}
 	return nil

